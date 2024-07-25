@@ -183,7 +183,16 @@ fn TerminatedArrayList(comptime T: type, comptime sentinel_value: ?T) type
 		{
 			for (self.inner.items) |item| {
 				if (item) |ptr| {
-					self.inner.allocator.free(ptr);
+					switch (@typeInfo(@TypeOf(ptr))) {
+						.Pointer => {
+							const slice = ptr[0..std.mem.len(ptr)];
+							self.inner.allocator.free(slice);
+						},
+						.Array => {
+							self.inner.allocator.free(ptr);
+						},
+						else => comptime unreachable,
+					}
 				}
 			}
 			self.inner.deinit();
@@ -245,7 +254,7 @@ fn TerminatedArrayList(comptime T: type, comptime sentinel_value: ?T) type
 	};
 }
 
-const CStringCArray = TerminatedArrayList([:NUL]const u8, null);
+const CStringCArray = TerminatedArrayList([*:NUL]const u8, null);
 
 pub fn main() !void
 {
@@ -256,10 +265,15 @@ pub fn main() !void
 	var args = try std.process.ArgIterator.initWithAllocator(allocator);
 	defer args.deinit();
 	while (args.next()) |arg| {
-		var copied: [:NUL]u8 = try allocator.allocSentinel(u8, arg.len, NUL);
-		copied[copied.len] = 0;
+		var copied: [*:NUL]u8 = try allocator.allocSentinel(u8, arg.len, NUL);
+		copied[arg.len] = 0;
 		@memcpy(copied, arg);
 		try arglist.append(copied);
+	}
+
+	if (arglist.count() < 2) {
+		println("i need some args bro.", .{});
+		return;
 	}
 
 	log.debug("args: {}", .{ arglist });
@@ -311,9 +325,11 @@ pub fn main() !void
 		// I totally don't get why this is here but all PTY code we've found does this.
 		std.posix.close(other_side);
 
-		const argv: [*:null]const ?[*:NUL]const u8 = &.{ "id" };
-		const envp: [*:null]const ?[*:NUL]const u8 = &.{ "TMP=/tmp" };
-		return std.posix.execvpeZ("id", argv, envp);
+		const argsSlice: [:null]const ?[*:NUL]const u8 = arglist.asTerminatedSlice();
+		const first = argsSlice[1] orelse unreachable;
+		const argv: [*:null]const ?[*:NUL]const u8 = argsSlice[1..];
+		const envp: [*:null]const ?[*:NUL]const u8 = std.c.environ;
+		return std.posix.execvpeZ(first, argv, envp);
 	} else {
 		log.debug("forked to process {}", .{ pid });
 
