@@ -14,10 +14,19 @@ pub const std_options = .{
 /// Not to be confused with null.
 const NUL: u8 = 0;
 
-fn println(comptime fmt: []const u8, args: anytype) void
+fn eprintln(comptime fmt: []const u8, args: anytype) void
 {
 	std.debug.print(fmt, args);
 	std.debug.print("\n", .{});
+}
+
+/// Errors writing to stdout are silently discarded, like std.debug.print.
+fn println(comptime fmt: []const u8, args: anytype) void
+{
+	const stdout = std.io.getStdOut();
+	const writer = stdout.writer();
+	writer.print(fmt, args) catch return;
+	writer.print("\n", .{}) catch return;
 }
 
 const Type = std.builtin.Type;
@@ -77,7 +86,7 @@ fn openpt(control_type: OpenptControl) OpenptError!std.posix.fd_t
 		.AGAIN => return error.ExhaustedPtys,
 		.NOSR => return error.ExhaustedStreams,
 		else => |e| {
-			println("posix_openpt() gave supposedly impossible error code {}", .{ e });
+			eprintln("posix_openpt() gave supposedly impossible error code {}", .{ e });
 			return error.Unexpected;
 		},
 	}
@@ -96,7 +105,7 @@ fn unlockpt(fd: std.posix.fd_t) PtyError!void
 		.BADF => return error.NotAFileDescriptor,
 		.INVAL => return error.NotAPty,
 		else => |e| {
-			println("unlockpt() gave supposedly impossible error code {}", .{ e });
+			eprintln("unlockpt() gave supposedly impossible error code {}", .{ e });
 			return error.Unexpected;
 		}
 	}
@@ -244,7 +253,7 @@ fn TerminatedArrayList(comptime T: type, comptime sentinel_value: ?T) type
 			std.debug.assert(slice.len == self.count());
 
 			for (slice, 0..) |arg, idx| {
-				try std.fmt.format(writer, if (Item == [:NUL]const u8) "\"{s}\"" else "{any}", .{ arg });
+				try std.fmt.format(writer, if (Item == CString) "\"{s}\"" else "{s}", .{ arg });
 				if (idx < slice.len - 1) {
 					try std.fmt.format(writer, "{s}", .{ ", "});
 				}
@@ -254,7 +263,8 @@ fn TerminatedArrayList(comptime T: type, comptime sentinel_value: ?T) type
 	};
 }
 
-const CStringCArray = TerminatedArrayList([*:NUL]const u8, null);
+const CString = [*:NUL]const u8;
+const CStringCArray = TerminatedArrayList(CString, null);
 
 /// Caller takes ownership of the returned array list, unless an error occurs.
 fn collectArgs(allocator: std.mem.Allocator) !CStringCArray
@@ -319,7 +329,6 @@ const BasicPoller = struct{
 
 		var fd_list = std.ArrayList(std.posix.fd_t).init(self.events.allocator);
 		errdefer fd_list.deinit();
-		//errdefer comptime unreachable;
 
 		for (0..nfds) |returned_fd_idx| {
 			const event = self.events.items[returned_fd_idx];
@@ -340,6 +349,47 @@ const BasicPoller = struct{
 	}
 };
 
+/// Caller is responsible for closing the file descriptor.
+pub fn handleSignalAsFile(signals: []const comptime_int) !std.posix.fd_t
+{
+	var set = std.posix.empty_sigset;
+	inline for (signals) |sig| {
+		// sigaddset() is posix standard, not sure why it's std.os.linux?
+		std.os.linux.sigaddset(&set, sig);
+	}
+
+	// We have to block a signal to be able to handle it as a file.
+	std.posix.sigprocmask(std.c.SIG.BLOCK, &set, null);
+	// And on the other hand, signalfd() is a Linux syscall, and not posix at all.
+	const filedes = std.posix.signalfd(-1, &set, 0);
+	return filedes;
+}
+
+pub fn streql(lhs: []const u8, rhs: []const u8) bool
+{
+	return std.mem.eql(u8, lhs, rhs);
+}
+
+pub fn printUsage() void
+{
+	const stdout = std.io.getStdOut();
+	stdout.writer().writeAll(
+		// This is *the* worst multiline syntax.
+		\\Usage: floatty <program> <args...>
+		\\
+		\\OPTIONS:
+		\\  --help     display this help message and exit
+		\\  --version  display version information and exit
+		\\
+	) catch |e| {
+		// If we can't write to stdout for even the help message, then we might as well
+		// at least let the caller process know *something* went wrong.
+		// Writing to stderr probably won't work either, but we'll throw an attempt in anyway.
+		eprintln("floatty: error writing help message to stdout: {}", .{ e });
+		std.process.exit(254);
+	};
+}
+
 pub fn main() !void
 {
 	const allocator = std.heap.c_allocator;
@@ -347,9 +397,45 @@ pub fn main() !void
 	var arglist = try collectArgs(allocator);
 	defer arglist.deinit();
 
-	if (arglist.count() < 2) {
-		println("i need some args bro.", .{});
-		return;
+	if (arglist.asSlice().len < 2) {
+		eprintln(
+			\\floatty: error: the following required arguments were not provided:
+			\\  <program>
+			\\
+			,
+			.{}
+		);
+		printUsage();
+		std.process.exit(255);
+	}
+
+	// Shitty, shotgun arg parser.
+	for (arglist.asSlice()[1..]) |arg| {
+		const argSlice: []const u8 = arg[0..std.mem.len(arg)];
+		// We can't take any --options after accepting positional arguments, so that
+		// we don't interpret things like `floatty ls --help` as `--help` for us.
+		if (argSlice[0] != '-') {
+			break;
+		}
+
+		if (streql(argSlice, "--help")) {
+			printUsage();
+			std.process.exit(0);
+		}
+
+		if (streql(argSlice, "--version")) {
+			println("floatty 0.0.1", .{});
+			std.process.exit(0);
+		}
+
+		eprintln(
+			"floatty: unrecognized option '{s}'\nTry 'floatty --help' for more information",
+			.{ argSlice },
+		);
+		std.process.exit(255);
+
+		// Yes this loop can only ever do one iteration, technically.
+		// I'll (maybe) add more args later.
 	}
 
 	log.debug("args: {}", .{ arglist });
@@ -401,10 +487,10 @@ pub fn main() !void
 		// I totally don't get why this is here but all PTY code we've found does this.
 		std.posix.close(other_side);
 
-		const argsSlice: [:null]const ?[*:NUL]const u8 = arglist.asTerminatedSlice();
+		const argsSlice: [:null]const ?CString = arglist.asTerminatedSlice();
 		const first = argsSlice[1] orelse unreachable;
-		const argv: [*:null]const ?[*:NUL]const u8 = argsSlice[1..];
-		const envp: [*:null]const ?[*:NUL]const u8 = std.c.environ;
+		const argv: [*:null]const ?CString = argsSlice[1..];
+		const envp: [*:null]const ?CString = std.c.environ;
 		return std.posix.execvpeZ(first, argv, envp);
 	}
 
@@ -416,15 +502,8 @@ pub fn main() !void
 	const pty_reader = pty_file.reader();
 
 	// Switch to file descriptor based handling for SIGCHLD.
-	var sigchld_set: std.posix.sigset_t = sigset: {
-		var set = std.posix.empty_sigset;
-		std.os.linux.sigaddset(&set, std.posix.SIG.CHLD);
-		break :sigset set;
-	};
-	std.posix.sigprocmask(std.os.linux.SIG.BLOCK, &sigchld_set, null);
-	const sigchld_fd = try std.posix.signalfd(-1, &sigchld_set, 0);
+	const sigchld_fd = try handleSignalAsFile(&.{ std.posix.SIG.CHLD });
 	defer std.posix.close(sigchld_fd);
-
 
 	// Now setup polling for both the pty and the sigchld file descriptors.
 	const poller = try BasicPoller.init(allocator, &.{ pty_fd, sigchld_fd });
@@ -449,6 +528,8 @@ pub fn main() !void
 					try std.io.getStdOut().writeAll(buffer[0..count]);
 				}
 			} else if (fd == sigchld_fd) {
+				// We don't want to break immediately, because we could still have non-signal
+				// events left to handle.
 				keep_going = false;
 			} else unreachable;
 		}
