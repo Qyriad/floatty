@@ -361,7 +361,7 @@ pub fn handleSignalAsFile(signals: []const comptime_int) !std.posix.fd_t
 	// We have to block a signal to be able to handle it as a file.
 	std.posix.sigprocmask(std.c.SIG.BLOCK, &set, null);
 	// And on the other hand, signalfd() is a Linux syscall, and not posix at all.
-	const filedes = std.posix.signalfd(-1, &set, 0);
+	const filedes = std.posix.signalfd(-1, &set, std.os.linux.SFD.NONBLOCK);
 	return filedes;
 }
 
@@ -388,6 +388,46 @@ pub fn printUsage() void
 		eprintln("floatty: error writing help message to stdout: {}", .{ e });
 		std.process.exit(254);
 	};
+}
+
+/// Reads and executes a callback on each buffer read until a read would block.
+fn readAndDo(
+	reader: anytype,
+	handler: type,
+) (@TypeOf(reader).Error || handler.Error)!void
+{
+	var buffer = std.mem.zeroes([4096]u8);
+	var count: usize = 1;
+	while (count > 0) {
+		if (reader.read(&buffer)) |amount_read| {
+			count = amount_read;
+		} else |err| switch (err) {
+			error.WouldBlock => return,
+			else => |e| return e,
+		}
+
+		try handler.callback(buffer[0..count]);
+	}
+}
+
+const printHandler = struct{
+	const Error = std.fs.File.WriteError;
+	fn callback(buffer: []const u8) std.fs.File.WriteError!void
+	{
+		try std.io.getStdOut().writeAll(buffer);
+	}
+};
+
+/// Reads and discards until a read would block.
+fn readAndDiscard(reader: anytype) !void
+{
+	var buffer = std.mem.zeroes([4096]u8);
+	while (true) {
+		_ = reader.read(&buffer) catch |e| switch (e) {
+			error.WouldBlock => return,
+			else => return e,
+		};
+	}
 }
 
 pub fn main() !void
@@ -504,33 +544,34 @@ pub fn main() !void
 	// Switch to file descriptor based handling for SIGCHLD.
 	const sigchld_fd = try handleSignalAsFile(&.{ std.posix.SIG.CHLD });
 	defer std.posix.close(sigchld_fd);
+	const sigchld_file = std.fs.File{ .handle = sigchld_fd };
+
+	const sigwinch_fd = try handleSignalAsFile(&.{ std.posix.SIG.WINCH });
+	defer std.posix.close(sigwinch_fd);
+	const sigwinch_file = std.fs.File{ .handle = sigwinch_fd };
 
 	// Now setup polling for both the pty and the sigchld file descriptors.
-	const poller = try BasicPoller.init(allocator, &.{ pty_fd, sigchld_fd });
+	const poller = try BasicPoller.init(allocator, &.{ pty_fd, sigchld_fd, sigwinch_fd });
 	defer poller.deinit();
 
 	// And startup our poll-based event loop.
 	var keep_going = true;
-	while (keep_going) outer: {
+	while (keep_going) {
 		const fd_list: std.ArrayList(std.posix.fd_t) = try poller.next(-1) orelse break;
 		defer fd_list.deinit();
+
 		for (fd_list.items) |fd| {
 			if (fd == pty_fd) {
-				var buffer = std.mem.zeroes([4096]u8);
-				var count: usize = 1;
-				while (count > 0) {
-					if (pty_reader.read(&buffer)) |amount_read| {
-						count = amount_read;
-					} else |err| switch (err) {
-						error.WouldBlock => break :outer,
-						else => |e| return e,
-					}
-					try std.io.getStdOut().writeAll(buffer[0..count]);
-				}
+				try readAndDo(pty_reader, printHandler);
+			} else if (fd == sigwinch_fd) {
+				// Read and discard to clear the "event" from our poller.
+				try readAndDiscard(sigwinch_file.reader());
 			} else if (fd == sigchld_fd) {
 				// We don't want to break immediately, because we could still have non-signal
 				// events left to handle.
 				keep_going = false;
+				// Read and discard to clear the "event" from our poller.
+				try readAndDiscard(sigchld_file.reader());
 			} else unreachable;
 		}
 	}
