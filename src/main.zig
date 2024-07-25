@@ -256,20 +256,96 @@ fn TerminatedArrayList(comptime T: type, comptime sentinel_value: ?T) type
 
 const CStringCArray = TerminatedArrayList([*:NUL]const u8, null);
 
-pub fn main() !void
+/// Caller takes ownership of the returned array list, unless an error occurs.
+fn collectArgs(allocator: std.mem.Allocator) !CStringCArray
 {
-	const allocator = std.heap.c_allocator;
-
 	var arglist = try CStringCArray.init(allocator);
-	defer arglist.deinit();
+	errdefer arglist.deinit();
+
 	var args = try std.process.ArgIterator.initWithAllocator(allocator);
 	defer args.deinit();
+
 	while (args.next()) |arg| {
 		var copied: [*:NUL]u8 = try allocator.allocSentinel(u8, arg.len, NUL);
 		copied[arg.len] = 0;
 		@memcpy(copied, arg);
+		std.debug.assert(copied[arg.len] == 0);
 		try arglist.append(copied);
 	}
+
+	return arglist;
+}
+
+const BasicPoller = struct{
+	const Self = @This();
+
+	fds: []const std.posix.fd_t,
+
+	poller: std.posix.fd_t,
+
+	events: std.ArrayList(std.os.linux.epoll_event),
+
+	pub fn init(allocator: std.mem.Allocator, file_descriptors: []const std.posix.fd_t) !Self
+	{
+		var self = Self{
+			.fds = file_descriptors,
+			.poller = try std.posix.epoll_create1(0),
+			.events = std.ArrayList(std.os.linux.epoll_event).init(allocator),
+		};
+		errdefer std.posix.close(self.poller);
+		errdefer self.events.deinit();
+
+		for (self.fds) |fd| {
+			var poll_event = std.os.linux.epoll_event{
+				.events = std.os.linux.EPOLL.IN | std.os.linux.EPOLL.ERR | std.os.linux.EPOLL.HUP,
+				.data = std.os.linux.epoll_data{
+					.fd = fd,
+				},
+			};
+			try std.posix.epoll_ctl(self.poller, std.os.linux.EPOLL.CTL_ADD, fd, &poll_event);
+			try self.events.append(poll_event);
+		}
+
+		return self;
+	}
+
+	/// Caller owns the ArrayList returned, unless an error occurs.
+	pub fn next(self: Self, timeout: i32) !?std.ArrayList(std.posix.fd_t)
+	{
+		const nfds = std.posix.epoll_wait(self.poller, self.events.items, timeout);
+		if (nfds < 1) {
+			return null;
+		}
+
+		var fd_list = std.ArrayList(std.posix.fd_t).init(self.events.allocator);
+		errdefer fd_list.deinit();
+		//errdefer comptime unreachable;
+
+		for (0..nfds) |returned_fd_idx| {
+			const event = self.events.items[returned_fd_idx];
+			for (self.fds) |known_fd| {
+				if (event.data.fd == known_fd) {
+					try fd_list.append(event.data.fd);
+				}
+			}
+		}
+
+		return fd_list;
+	}
+
+	pub fn deinit(self: Self) void
+	{
+		std.posix.close(self.poller);
+		self.events.deinit();
+	}
+};
+
+pub fn main() !void
+{
+	const allocator = std.heap.c_allocator;
+
+	var arglist = try collectArgs(allocator);
+	defer arglist.deinit();
 
 	if (arglist.count() < 2) {
 		println("i need some args bro.", .{});
@@ -318,7 +394,7 @@ pub fn main() !void
 
 		// Set stdout, and stderr for this child process to the pty.
 		// TODO: should this also set stdin?
-		inline for (.{ STDOUT_FILENO, STDERR_FILENO }) |fileno| {
+		inline for (.{ STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO }) |fileno| {
 			try std.posix.dup2(other_side, fileno);
 		}
 
@@ -330,78 +406,56 @@ pub fn main() !void
 		const argv: [*:null]const ?[*:NUL]const u8 = argsSlice[1..];
 		const envp: [*:null]const ?[*:NUL]const u8 = std.c.environ;
 		return std.posix.execvpeZ(first, argv, envp);
-	} else {
-		log.debug("forked to process {}", .{ pid });
+	}
 
-		const pty_file = std.fs.File{ .handle = pty_fd };
-		const pty_reader = pty_file.reader();
+	// Parent code...
 
-		// Switch to file descriptor based handling for SIGCHLD.
-		var sigchld_set: std.posix.sigset_t = sigset: {
-			var set = std.posix.empty_sigset;
-			std.os.linux.sigaddset(&set, std.posix.SIG.CHLD);
-			break :sigset set;
-		};
-		std.posix.sigprocmask(std.os.linux.SIG.BLOCK, &sigchld_set, null);
-		const sigchld_fd = try std.posix.signalfd(-1, &sigchld_set, 0);
-		defer std.posix.close(sigchld_fd);
+	log.debug("forked to process {}", .{ pid });
 
-		// Now setup polling for both the pty and the sigchld file descriptors.
-		const poller = try std.posix.epoll_create1(0);
-		defer std.posix.close(poller);
-		var pty_poll_event = std.os.linux.epoll_event{
-			.events = std.os.linux.EPOLL.IN | std.os.linux.EPOLL.ERR | std.os.linux.EPOLL.HUP,
-			.data = std.os.linux.epoll_data{
-				.fd = pty_fd,
-			},
-		};
-		try std.posix.epoll_ctl(poller, std.os.linux.EPOLL.CTL_ADD, pty_fd, &pty_poll_event);
-		var sigchld_poll_event = std.os.linux.epoll_event{
-			.events = std.os.linux.EPOLL.IN | std.os.linux.EPOLL.ERR | std.os.linux.EPOLL.HUP,
-			.data = std.os.linux.epoll_data{
-				.fd = sigchld_fd,
-			},
-		};
-		try std.posix.epoll_ctl(poller, std.os.linux.EPOLL.CTL_ADD, sigchld_fd, &sigchld_poll_event);
+	const pty_file = std.fs.File{ .handle = pty_fd };
+	const pty_reader = pty_file.reader();
 
-		var poll_events: [2]std.os.linux.epoll_event = .{ pty_poll_event, sigchld_poll_event };
+	// Switch to file descriptor based handling for SIGCHLD.
+	var sigchld_set: std.posix.sigset_t = sigset: {
+		var set = std.posix.empty_sigset;
+		std.os.linux.sigaddset(&set, std.posix.SIG.CHLD);
+		break :sigset set;
+	};
+	std.posix.sigprocmask(std.os.linux.SIG.BLOCK, &sigchld_set, null);
+	const sigchld_fd = try std.posix.signalfd(-1, &sigchld_set, 0);
+	defer std.posix.close(sigchld_fd);
 
-		// And startup our poll-based event loop.
-		var keep_going = true;
-		while (keep_going) {
-			// -1 means block forever.
-			const nfds = std.posix.epoll_wait(poller, &poll_events, -1);
-			if (nfds < 1) {
-				unreachable;
-			}
 
-			for (0..nfds) |fd_idx| {
-				const event = poll_events[fd_idx];
-				if (event.data.fd == pty_fd) {
+	// Now setup polling for both the pty and the sigchld file descriptors.
+	const poller = try BasicPoller.init(allocator, &.{ pty_fd, sigchld_fd });
+	defer poller.deinit();
 
-					var buffer = std.mem.zeroes([4096]u8);
-					// lol, mini hack because zig doesn't have do { } while
-					var count: usize = 1;
-					while (count > 0) {
-						if (pty_reader.read(&buffer)) |amount_read| {
-							count = amount_read;
-						} else |err| switch (err) {
-							error.WouldBlock => break,
-							else => |e| return e,
-						}
-						try std.io.getStdOut().writeAll(buffer[0..count]);
+	// And startup our poll-based event loop.
+	var keep_going = true;
+	while (keep_going) outer: {
+		const fd_list: std.ArrayList(std.posix.fd_t) = try poller.next(-1) orelse break;
+		defer fd_list.deinit();
+		for (fd_list.items) |fd| {
+			if (fd == pty_fd) {
+				var buffer = std.mem.zeroes([4096]u8);
+				var count: usize = 1;
+				while (count > 0) {
+					if (pty_reader.read(&buffer)) |amount_read| {
+						count = amount_read;
+					} else |err| switch (err) {
+						error.WouldBlock => break :outer,
+						else => |e| return e,
 					}
-				} else if (event.data.fd == sigchld_fd) {
-					keep_going = false;
-				} else {
-					unreachable;
+					try std.io.getStdOut().writeAll(buffer[0..count]);
 				}
-			}
+			} else if (fd == sigchld_fd) {
+				keep_going = false;
+			} else unreachable;
 		}
+	}
 
-		defer {
-			const status = std.posix.waitpid(pid, 0);
-			log.info("waitpid() returned {}", .{ status });
-		}
+	defer {
+		const status = std.posix.waitpid(pid, 0);
+		log.info("waitpid() returned {}", .{ status });
 	}
 }
