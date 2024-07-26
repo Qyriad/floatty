@@ -8,6 +8,10 @@ const STDIN_FILENO = std.posix.STDIN_FILENO;
 const STDOUT_FILENO = std.posix.STDOUT_FILENO;
 const STDERR_FILENO = std.posix.STDERR_FILENO;
 
+const cstrings = @import("cstrings.zig");
+const CString = cstrings.CString;
+const CStringCArray = cstrings.CStringCArray;
+
 //pub const std_options = .{
 //	.log_level = .info,
 //};
@@ -183,102 +187,6 @@ fn csctty(fd: std.posix.fd_t) error{ PermissionDenied, Unexpected }!void
 		else => |e| std.posix.unexpectedErrno(e),
 	};
 }
-
-fn TerminatedArrayList(comptime T: type, comptime sentinel_value: ?T) type
-{
-	return struct{
-		const Self = @This();
-		const Item = T;
-		const sentinel = sentinel_value;
-
-		inner: std.ArrayList(?Item),
-
-		pub fn init(allocator: std.mem.Allocator) !Self
-		{
-			var list = std.ArrayList(?Item).init(allocator);
-			try list.append(null);
-			return Self{
-				.inner = list,
-			};
-		}
-
-		pub fn deinit(self: Self) void
-		{
-			for (self.inner.items) |item| {
-				if (item) |ptr| {
-					switch (@typeInfo(@TypeOf(ptr))) {
-						.Pointer => {
-							const slice = ptr[0..std.mem.len(ptr)];
-							self.inner.allocator.free(slice);
-						},
-						.Array => {
-							self.inner.allocator.free(ptr);
-						},
-						else => comptime unreachable,
-					}
-				}
-			}
-			self.inner.deinit();
-		}
-
-		pub fn append(self: *Self, item: Item) !void
-		{
-			const last: *?Item = &self.inner.items[self.inner.items.len - 1];
-			std.debug.assert(last.* == null);
-			// These two operations must be in this order.
-			// If we set the last item before doing the append, and the append failed, then
-			// we'd have an arraylist where the last element isn't the sentinel terminator.
-			try self.inner.append(null);
-			last.* = item;
-		}
-
-		/// The number of *items* in this arraylist -- so not including the sentinel.
-		pub fn count(self: Self) usize
-		{
-			return self.inner.items.len - 1;
-		}
-
-		/// The number of slots this arraylist is using -- so including the sentinel.
-		pub fn totalLen(self: Self) usize
-		{
-			return self.inner.items.len;
-		}
-
-		pub fn asSlice(self: Self) []Item
-		{
-			return @ptrCast(self.inner.items[0..self.count()]);
-		}
-
-		pub fn asTerminatedSlice(self: Self) [:null]?Item
-		{
-			return @ptrCast(self.inner.items[0..self.inner.items.len]);
-		}
-
-		pub fn format(self: Self, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void
-		{
-			if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
-			if (self.count() < 1) {
-				return;
-			}
-
-			try std.fmt.format(writer, "{s}", .{ "{ " });
-
-			const slice: []Item = self.asSlice();
-			std.debug.assert(slice.len == self.count());
-
-			for (slice, 0..) |arg, idx| {
-				try std.fmt.format(writer, if (Item == CString) "\"{s}\"" else "{s}", .{ arg });
-				if (idx < slice.len - 1) {
-					try std.fmt.format(writer, "{s}", .{ ", "});
-				}
-			}
-			try std.fmt.format(writer, "{s}", .{ " }" });
-		}
-	};
-}
-
-const CString = [*:NUL]const u8;
-const CStringCArray = TerminatedArrayList(CString, null);
 
 /// Caller takes ownership of the returned array list, unless an error occurs.
 fn collectArgs(allocator: std.mem.Allocator) !CStringCArray
@@ -558,7 +466,7 @@ pub fn main() !void
 		// I'll (maybe) add more args later.
 	}
 
-	log.debug("args: {}", .{ arglist });
+	log.debug("args: {}", .{ arglist.formatter("\"{s}\"") });
 
 	const pty_fd: c_int = try openpt(.BecomeNonControllingTerminal);
 	defer std.posix.close(pty_fd);

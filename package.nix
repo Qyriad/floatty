@@ -16,7 +16,7 @@ in stdenv.mkDerivation (self: {
 		root = ./.;
 		fileset = lib.fileset.unions [
 				./build.zig.zon
-				./src/main.zig
+				./src
 				./build.zig
 		];
 	};
@@ -30,7 +30,7 @@ in stdenv.mkDerivation (self: {
 	zigFlags = [
 		"-O" "ReleaseSafe"
 		"--verbose-link"
-		"--verbose-cc"
+		#"--verbose-cc"
 		"-fno-strip"
 		"-fPIE"
 		"-fno-omit-frame-pointer"
@@ -43,11 +43,14 @@ in stdenv.mkDerivation (self: {
 		#"--verbose-cimport"
 	];
 
-	buildPhase = ''
-		runHook preBuild
+	preConfigure = ''
 		export ZIG_GLOBAL_CACHE_DIR="$PWD/.cache"
 		mkdir -p "$ZIG_GLOBAL_CACHE_DIR"
-		zig run "''${zigFlags[@]}" src/main.zig "-femit-bin=./floatty"
+	'';
+
+	buildPhase = ''
+		runHook preBuild
+		zig build-exe "''${zigFlags[@]}" src/main.zig "-femit-bin=./floatty"
 		runHook postBuild
 	'';
 
