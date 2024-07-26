@@ -17,8 +17,7 @@ const NUL: u8 = 0;
 
 fn eprintln(comptime fmt: []const u8, args: anytype) void
 {
-	std.debug.print(fmt, args);
-	std.debug.print("\n", .{});
+	std.debug.print(fmt ++ "\n", args);
 }
 
 /// Errors writing to stdout are silently discarded, like std.debug.print.
@@ -26,8 +25,7 @@ fn println(comptime fmt: []const u8, args: anytype) void
 {
 	const stdout = std.io.getStdOut();
 	const writer = stdout.writer();
-	writer.print(fmt, args) catch return;
-	writer.print("\n", .{}) catch return;
+	writer.print(fmt ++ "\n", args) catch return;
 }
 
 const Type = std.builtin.Type;
