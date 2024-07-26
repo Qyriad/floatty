@@ -7,9 +7,9 @@ const STDIN_FILENO = std.posix.STDIN_FILENO;
 const STDOUT_FILENO = std.posix.STDOUT_FILENO;
 const STDERR_FILENO = std.posix.STDERR_FILENO;
 
-pub const std_options = .{
-	.log_level = .info,
-};
+//pub const std_options = .{
+//	.log_level = .info,
+//};
 
 /// Not to be confused with null.
 const NUL: u8 = 0;
@@ -146,6 +146,21 @@ fn getwinsz(fd: std.posix.fd_t) !std.posix.winsize
 			.ws_xpixel = winsize.ws_xpixel,
 			.ws_ypixel = winsize.ws_ypixel,
 		},
+		else => |e| std.posix.unexpectedErrno(e),
+	};
+}
+
+fn setwinsz(fd: std.posix.fd_t, size: std.posix.winsize) !void
+{
+	const winsize = termios.winsize{
+		.ws_row = size.ws_row,
+		.ws_col = size.ws_col,
+		.ws_xpixel = size.ws_xpixel,
+		.ws_ypixel = size.ws_ypixel,
+	};
+	const res = std.os.linux.ioctl(fd, termios.TIOCSWINSZ, @intFromPtr(&winsize));
+	return switch (std.posix.errno(res)) {
+		.SUCCESS => {},
 		else => |e| std.posix.unexpectedErrno(e),
 	};
 }
@@ -430,6 +445,27 @@ fn readAndDiscard(reader: anytype) !void
 	}
 }
 
+pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.posix.fd_t) !void
+{
+	// Become a session leader...
+	_ = try setsid();
+
+	// ...and take our terminal as this session's terminal.
+	try csctty(our_pty);
+
+	// Set stdio file descriptors for this child process to the pty.
+	// TODO: should this also set stdin?
+	inline for(.{ STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO }) |fileno| {
+		try std.posix.dup2(our_pty, fileno);
+	}
+
+	// I totally don't get why this is here but all PTY code we've found does this.
+	std.posix.close(our_pty);
+
+	const envp: [*:null]const ?CString = std.c.environ;
+	return std.posix.execvpeZ(prog, argv, envp);
+}
+
 pub fn main() !void
 {
 	const allocator = std.heap.c_allocator;
@@ -498,43 +534,33 @@ pub fn main() !void
 
 	log.debug("Got file descriptors {} and {}", .{ pty_fd, other_side });
 
+	// TODO: technically there's a minor race condition here.
+	// If the user changes the parent terminal size after here, but before we setup
+	// the epoll() event loop, the size won't be propagated to the float-pty until
+	// the parent terminal size changes again.
 	const parent_winsize = try getwinsz(std.posix.STDIN_FILENO);
 	log.debug("our win size: {}", .{ parent_winsize });
+	try setwinsz(other_side, parent_winsize);
 
 	const child_winsize = try getwinsz(other_side);
 	log.debug("winsize: {}", .{ child_winsize });
 
 	// Spawn a new process, and then use setsid() and TIOCSCTTY to make this terminal
-	// the controlling terminal for that process.
+	// the controlling terminal for that process, and then spawn the requested command.
 	const pid = try std.posix.fork();
 	if (pid == 0) {
 		// Child code...
-
 		std.posix.close(pty_fd);
-
-		// Become a session leader...
-		_ = try setsid();
-
-		// ...and take our terminal as this session's terminal.
-		try csctty(other_side);
-
-		// Set stdout, and stderr for this child process to the pty.
-		// TODO: should this also set stdin?
-		inline for (.{ STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO }) |fileno| {
-			try std.posix.dup2(other_side, fileno);
-		}
-
-		// I totally don't get why this is here but all PTY code we've found does this.
-		std.posix.close(other_side);
-
 		const argsSlice: [:null]const ?CString = arglist.asTerminatedSlice();
 		const first = argsSlice[1] orelse unreachable;
 		const argv: [*:null]const ?CString = argsSlice[1..];
-		const envp: [*:null]const ?CString = std.c.environ;
-		return std.posix.execvpeZ(first, argv, envp);
+		return childProcess(first, argv, other_side);
 	}
 
 	// Parent code...
+	// Meanwhile, we'll be monitoring the PTY we connected the child to for output
+	// to forward to the non-float-pty, as well as SIGCHLD for when the command ends,
+	// and SIGWINCH to forward terminal size changes to the float-pty.
 
 	log.debug("forked to process {}", .{ pid });
 
@@ -566,6 +592,7 @@ pub fn main() !void
 			} else if (fd == sigwinch_fd) {
 				// Read and discard to clear the "event" from our poller.
 				try readAndDiscard(sigwinch_file.reader());
+				// And propagate the new winsize.
 			} else if (fd == sigchld_fd) {
 				// We don't want to break immediately, because we could still have non-signal
 				// events left to handle.
