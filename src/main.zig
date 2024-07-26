@@ -2,6 +2,7 @@ const std: type = @import("std");
 const print: fn (comptime []const u8, anytype) void = std.debug.print;
 const panic: fn (comptime []const u8, anytype) noreturn = std.debug.panic;
 const log = std.log;
+const fd_t = std.posix.fd_t;
 
 const STDIN_FILENO = std.posix.STDIN_FILENO;
 const STDOUT_FILENO = std.posix.STDOUT_FILENO;
@@ -466,6 +467,51 @@ pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.po
 	return std.posix.execvpeZ(prog, argv, envp);
 }
 
+pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
+{
+	const File = std.fs.File;
+
+	const pty_file = File{ .handle = pty_fd };
+
+	// Switch to file descriptor based handling for SIGCHLD and SIGWINCH,
+	// so we can multiplex them and PTY output.
+	const sigchld_fd = try handleSignalAsFile(&.{ std.posix.SIG.CHLD });
+	defer std.posix.close(sigchld_fd);
+	const sigchld = File{ .handle = sigchld_fd };
+	const sigwinch_fd = try handleSignalAsFile(&.{ std.posix.SIG.WINCH });
+	defer std.posix.close(sigwinch_fd);
+	const sigwinch = File{ .handle = sigwinch_fd };
+
+	// Now setup polling for them.
+	const poller = try BasicPoller.init(
+		allocator,
+		&.{ pty_fd, sigchld_fd, sigwinch_fd },
+	);
+	defer poller.deinit();
+
+	var keep_going = true;
+	while (keep_going) {
+		const fd_list: std.ArrayList(fd_t) = try poller.next(-1) orelse break;
+		defer fd_list.deinit();
+
+		for (fd_list.items) |fd| {
+			if (fd == pty_fd) {
+				try readAndDo(pty_file.reader(), printHandler);
+			} else if (fd == sigwinch_fd) {
+				// Read and discard to clear the "event" from our poller.
+				try readAndDiscard(sigwinch.reader());
+			} else if (fd == sigchld_fd) {
+				// We don't want to break immediately, because we could still have non-signal
+				// events left to handle.
+				keep_going = false;
+
+				// Read and discard to clear the "event" from our poller.
+				try readAndDiscard(sigchld.reader());
+			} else unreachable;
+		}
+	}
+}
+
 pub fn main() !void
 {
 	const allocator = std.heap.c_allocator;
@@ -557,54 +603,17 @@ pub fn main() !void
 		return childProcess(first, argv, other_side);
 	}
 
-	// Parent code...
-	// Meanwhile, we'll be monitoring the PTY we connected the child to for output
-	// to forward to the non-float-pty, as well as SIGCHLD for when the command ends,
-	// and SIGWINCH to forward terminal size changes to the float-pty.
-
-	log.debug("forked to process {}", .{ pid });
-
-	const pty_file = std.fs.File{ .handle = pty_fd };
-	const pty_reader = pty_file.reader();
-
-	// Switch to file descriptor based handling for SIGCHLD.
-	const sigchld_fd = try handleSignalAsFile(&.{ std.posix.SIG.CHLD });
-	defer std.posix.close(sigchld_fd);
-	const sigchld_file = std.fs.File{ .handle = sigchld_fd };
-
-	const sigwinch_fd = try handleSignalAsFile(&.{ std.posix.SIG.WINCH });
-	defer std.posix.close(sigwinch_fd);
-	const sigwinch_file = std.fs.File{ .handle = sigwinch_fd };
-
-	// Now setup polling for both the pty and the sigchld file descriptors.
-	const poller = try BasicPoller.init(allocator, &.{ pty_fd, sigchld_fd, sigwinch_fd });
-	defer poller.deinit();
-
-	// And startup our poll-based event loop.
-	var keep_going = true;
-	while (keep_going) {
-		const fd_list: std.ArrayList(std.posix.fd_t) = try poller.next(-1) orelse break;
-		defer fd_list.deinit();
-
-		for (fd_list.items) |fd| {
-			if (fd == pty_fd) {
-				try readAndDo(pty_reader, printHandler);
-			} else if (fd == sigwinch_fd) {
-				// Read and discard to clear the "event" from our poller.
-				try readAndDiscard(sigwinch_file.reader());
-				// And propagate the new winsize.
-			} else if (fd == sigchld_fd) {
-				// We don't want to break immediately, because we could still have non-signal
-				// events left to handle.
-				keep_going = false;
-				// Read and discard to clear the "event" from our poller.
-				try readAndDiscard(sigchld_file.reader());
-			} else unreachable;
-		}
-	}
-
 	defer {
+		// Gotta reap those children!
 		const status = std.posix.waitpid(pid, 0);
 		log.info("waitpid() returned {}", .{ status });
 	}
+
+	// Meanwhile here in the parent we'll be monitoring the PTY we connected the child
+	// to for output to forward to the non-float-pty, as well as SIGCHLD for when the
+	// command ends, and SIGWINCH to forward terminal size changes to the float-pty.
+
+	log.debug("forked to process {}", .{ pid });
+	try parentLoop(allocator, pty_fd);
+
 }
