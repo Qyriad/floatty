@@ -12,12 +12,12 @@ const cstrings = @import("cstrings.zig");
 const CString = cstrings.CString;
 const CStringCArray = cstrings.CStringCArray;
 
+/// Not to be confused with null.
+const NUL: u8 = 0;
+
 //pub const std_options = .{
 //	.log_level = .info,
 //};
-
-/// Not to be confused with null.
-const NUL: u8 = 0;
 
 fn eprintln(comptime fmt: []const u8, args: anytype) void
 {
@@ -30,13 +30,6 @@ fn println(comptime fmt: []const u8, args: anytype) void
 	const stdout = std.io.getStdOut();
 	const writer = stdout.writer();
 	writer.print(fmt ++ "\n", args) catch return;
-}
-
-const Type = std.builtin.Type;
-
-fn typeInfoOf(comptime value: anytype) Type
-{
-	return @typeInfo(@TypeOf(value));
 }
 
 const fcntl = @cImport({
@@ -312,6 +305,147 @@ pub fn printUsage() void
 	};
 }
 
+pub fn printHexString(str: []const u8) void
+{
+	var iterator = std.unicode.Utf8Iterator{
+		.bytes = str,
+		.i = 0,
+	};
+
+	while (iterator.nextCodepoint()) |codepoint| {
+		if (codepoint <= 0x7F) {
+			const ch: u8 = @intCast(codepoint);
+			if (ch == '\n') {
+				print("\\n", .{});
+			} else if (ch == '\r') {
+				print("\\r", .{});
+			} else if (ch == '\t') {
+				print("\\t", .{});
+			} else if (ch == ' ') {
+				print(" ", .{});
+			} else if (std.ascii.isControl(ch)) {
+				print("\\x{x:0>2}", .{ ch });
+			} else {
+				print("{c}", .{ ch });
+			}
+		} else {
+			print("\\u{x:0>4}", .{ codepoint });
+		}
+	}
+}
+
+test "countLinesInWin" {
+	const buffer: []const u8 = " \r100%|\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}"
+		++ "\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}| 1/1 [00:00<00:00, 63550.06it/s]\r\n";
+
+	var text = std.ArrayList(u21).init(std.heap.c_allocator);
+	var iterator = std.unicode.Utf8Iterator{
+		.bytes = buffer,
+		.i = 0,
+	};
+	while (iterator.nextCodepoint()) |codepoint| {
+		try text.append(codepoint);
+	}
+
+	println("testing width @ 320 -> 1", .{});
+	try std.testing.expectEqual(1, try countLinesInWin(std.heap.c_allocator, text.items, 320));
+	println("testing width @ 160 -> 2", .{});
+	try std.testing.expectEqual(2, try countLinesInWin(std.heap.c_allocator, text.items, 160));
+}
+
+pub const WinLines = struct{
+	pub const Line = struct{
+		width: u32,
+		// Caller continues to own these codepoints.
+		codepoints: []const u21,
+	};
+	lines: std.ArrayList(Line),
+};
+
+pub fn countLinesInWin(allocator: std.mem.Allocator, codepoints: []const u21, winsize: u32) !u32
+{
+	const Cursor = struct{
+		row: u32 = 1,
+		col: u32 = 1,
+	};
+	const Line = struct{
+		width: u32 = 0,
+	};
+
+	const newline: u21 = '\n';
+	const carriage_return: u21 = '\r';
+	const escape: u21 = '\x1b';
+	const winwidth: f64 = @floatFromInt(winsize);
+
+	var cur = Cursor{ };
+	// The right-most column that has text in it.
+	var textcol: u32 = 0;
+	// Virtual lines.
+	var lines = std.ArrayList(Line).init(allocator);
+	defer lines.deinit();
+
+	for (codepoints) |codepoint| {
+		if (codepoint == newline) {
+			try lines.append(.{ .width = textcol });
+			cur.row += 1;
+			cur.col = 1;
+			textcol = 0;
+		} else if (codepoint == carriage_return) {
+			cur.col = 1;
+		} else if (codepoint == escape) {
+			std.debug.panic("idk what to do with escape!!", .{});
+		} else {
+			cur.col += 1;
+			textcol = @max(cur.col - 1, textcol);
+		}
+	}
+
+	// If there was a final newline, but nothing outputted on that line, then we don't
+	// count that as a line.
+	if (textcol != 0) {
+		try lines.append(.{ .width = textcol });
+	}
+
+	var total: u32 = 0;
+	for (lines.items) |line| {
+		// @floatFromInt() needs a type annotation to work, so this has to be
+		// a separate variable.
+		const line_width: f64 = @floatFromInt(line.width);
+		const visual_lines = line_width / winwidth;
+		total += @intFromFloat(@ceil(visual_lines));
+	}
+
+
+	return total;
+}
+
 /// Reads and executes a callback on each buffer read until a read would block.
 fn readAndDo(
 	reader: anytype,
@@ -373,6 +507,166 @@ pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.po
 	return std.posix.execvpeZ(prog, argv, envp);
 }
 
+pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posix.winsize) !void
+{
+	const Cursor = struct{
+		row: u32 = 1,
+		col: u32 = 1,
+	};
+
+	const TermRow = struct{
+		columns: u32,
+		text: []const u21,
+	};
+
+	const newline: u21 = '\n';
+	const carriage_return: u21 = '\r';
+	const escape: u21 = '\x1b';
+
+	const stdout = std.io.getStdOut();
+	const winwidth: f64 = @floatFromInt(winsize.ws_col);
+
+	var cur = Cursor{};
+	// The right-most column that has text in it.
+	var textcol: u32 = 0;
+
+	// TODO: reuse allocation between reflows?
+	var term_rows = std.ArrayList(TermRow).init(allocator);
+	defer term_rows.deinit();
+
+	var row_start: usize = 0;
+	for (hist, 0..) |codepoint, idx| {
+		if (codepoint == newline) {
+			// We don't explicitly need to include the newline here (?),
+			// otherwise we would do idx + 1.
+			const line_data: []const u21 = hist[row_start..idx];
+			try term_rows.append(.{
+				.columns = textcol,
+				.text = line_data,
+			});
+
+			cur.row += 1;
+			cur.col = 1;
+			textcol = 0;
+			row_start = idx;
+		} else if (codepoint == carriage_return) {
+			// \r doesn't change any existing output, but it does affect how future
+			// characters affect our lines.
+			cur.col = 1;
+		} else if (codepoint == escape) {
+			std.debug.panic("todo!", .{});
+		} else {
+			cur.col += 1;
+			// The cursor's column is 1-indexed, but what column actually has output
+			// is 0-indexed.
+			textcol = @max(cur.col - 1, textcol);
+		}
+	}
+
+	// Take care of anything left in the last line processed
+	if (textcol != 0) {
+		try term_rows.append(.{
+			.columns = textcol,
+			.text = hist[row_start..],
+		});
+	}
+
+	// Figure out how many lines we're gonna need to reflow.
+	var total_lines: u32 = 0;
+	for (term_rows.items) |row| {
+		// @floatFromInt() needs a type annotation to work, so this has to be
+		// a separate variable.
+		const line_width: f64 = @floatFromInt(row.columns);
+		const visual_lines = line_width / winwidth;
+		total_lines += @intFromFloat(@ceil(visual_lines));
+	}
+	// Move up that many lines.
+	try stdout.writer().print("\r\x1b[{}F", .{total_lines});
+
+	// FIXME: choose a better threshold.
+	const threshold: comptime_int = 10;
+
+	// I'd prefer not to make a syscall for every codepoint we want to write.
+	// TODO: reuse allocation across reflows or something
+	var line_buffer = std.ArrayList(u8).init(allocator);
+	defer line_buffer.deinit();
+
+	// Reset our state; we have some cursor tracking to do again!
+	cur.col = 1;
+	textcol = 0;
+
+	// And finally, replay, with some modifications.
+	for (term_rows.items) |row| {
+		// Clear line.
+		try line_buffer.appendSlice("\r\x1b[0K");
+
+		// If this row doesn't overflow, then we can just output it verbatim!
+		// TODO: reflow-expand too, not just reflow-shrink.
+		if (row.columns <= winsize.ws_col) {
+			// But we do have to encode it back to UTF-8 first.
+			for (row.text) |codepoint| {
+				var buffer = std.mem.zeroes([8]u8);
+				const len = try std.unicode.utf8Encode(codepoint, &buffer);
+				try line_buffer.appendSlice(buffer[0..len]);
+			}
+			try line_buffer.append('\n');
+			_ = try stdout.writer().write(line_buffer.items);
+
+			continue;
+		}
+
+		// Otherwise, we have work to do.
+		var last_char: u21 = 0;
+		var last_count: u32 = 0;
+		// Columns left.
+		for (row.text) |codepoint| {
+
+			if (codepoint == newline) {
+				std.debug.panic("bruh this shouldn't happen", .{});
+			}
+
+			const left: i64 = @as(i64, row.columns) - @as(i64, cur.col);
+			if (codepoint == carriage_return) {
+				// Reset state.
+
+				try line_buffer.append('\r');
+				cur.col = 1;
+				// FIXME: textcol?
+				last_char = 0;
+				last_count = 0;
+				continue;
+			}
+
+			defer last_char = codepoint;
+
+			if (codepoint == last_char) {
+				last_count += 1;
+			} else {
+				last_count = 0;
+			}
+
+			// Hueristic: if we see a bunch of the same characters in a row, that segment
+			// can *probably* be lengthed or shortened as needed.
+
+			// FIXME: this is significantly overshrinking rn.
+			if ((left > winsize.ws_col) and (last_count >= threshold)) {
+				// Don't output anything.
+				continue;
+			}
+
+			// Otherwise output normally.
+			var buffer = std.mem.zeroes([8]u8);
+			const len = try std.unicode.utf8Encode(codepoint, &buffer);
+			try line_buffer.appendSlice(buffer[0..len]);
+			cur.col += 1;
+		}
+
+		try line_buffer.appendSlice("\n\x1b[0K");
+		_ = try stdout.writer().write(line_buffer.items);
+		line_buffer.clearAndFree();
+	}
+}
+
 pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 {
 	const File = std.fs.File;
@@ -395,6 +689,15 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 	);
 	defer poller.deinit();
 
+	var known_history = std.ArrayList(u21).init(allocator);
+	defer known_history.deinit();
+
+	var current_size = try getwinsz(STDIN_FILENO);
+	try setwinsz(pty_fd, current_size);
+
+	var historyBuffer = std.ArrayList(u8).init(allocator);
+	try historyBuffer.ensureTotalCapacity(8 * 1024);
+
 	var keep_going = true;
 	while (keep_going) {
 		const fd_list: std.ArrayList(fd_t) = try poller.next(-1) orelse break;
@@ -402,10 +705,35 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 
 		for (fd_list.items) |fd| {
 			if (fd == pty_fd) {
-				try readAndDo(pty_file.reader(), printHandler);
+				var buffer = std.mem.zeroes([4096]u8);
+				var count: usize = 1;
+				inner: while (count > 0) {
+					if (pty_file.read(&buffer)) |amount_read| {
+						count = amount_read;
+					} else |err| switch (err) {
+						error.WouldBlock => break :inner,
+						else => return err,
+					}
+					try std.io.getStdOut().writeAll(buffer[0..count]);
+					var iterator = std.unicode.Utf8Iterator{
+						.bytes = buffer[0..count],
+						.i = 0,
+					};
+					while (iterator.nextCodepoint()) |codepoint| {
+						try known_history.append(codepoint);
+					}
+				}
 			} else if (fd == sigwinch_fd) {
 				// Read and discard to clear the "event" from our poller.
 				try readAndDiscard(sigwinch.reader());
+
+				// Get the new size, and forward it to the child.
+				current_size = try getwinsz(STDIN_FILENO);
+				try setwinsz(pty_fd, current_size);
+
+				try reflow(allocator, known_history.items, current_size);
+
+				// Clear and redraw known lines.
 			} else if (fd == sigchld_fd) {
 				// We don't want to break immediately, because we could still have non-signal
 				// events left to handle.

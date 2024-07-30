@@ -4,10 +4,10 @@ const std = @import("std");
 // declaratively construct a build graph that will be executed by an external
 // runner.
 pub fn build(b: *std.Build) void {
-	b.verbose = true;
-	b.verbose_link = true;
-	b.verbose_cc = true;
-	b.release_mode = .safe;
+	b.verbose = false;
+	b.verbose_link = false;
+	b.verbose_cc = false;
+	//b.release_mode = .safe;
 
 	// Standard target options allows the person running `zig build` to choose
 	// what target to build for. Here we do not override the defaults, which
