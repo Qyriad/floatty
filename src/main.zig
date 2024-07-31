@@ -696,6 +696,7 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 	try setwinsz(pty_fd, current_size);
 
 	var historyBuffer = std.ArrayList(u8).init(allocator);
+	defer historyBuffer.deinit();
 	try historyBuffer.ensureTotalCapacity(8 * 1024);
 
 	var keep_going = true;
