@@ -56,6 +56,19 @@ const errno = @cImport({
 	@cInclude("errno.h");
 });
 
+const unistd = @cImport({
+	@cDefine("_ISO_C11_SOURCE", "1");
+	@cDefine("_POSIX_SOURCE", "200809L");
+	@cDefine("_XOPEN_SOURCE", "700");
+	@cInclude("unistd.h");
+});
+
+var log_file: std.fs.File = undefined;
+
+fn printLog(comptime fmt: []const u8, args: anytype) void {
+	log_file.writer().print(fmt ++ "\n", args) catch return;
+}
+
 const OpenptError = error{
 	ExhaustedFileDescriptors,
 	ExhaustedFiles,
@@ -179,6 +192,43 @@ fn csctty(fd: std.posix.fd_t) error{ PermissionDenied, Unexpected }!void
 		.PERM => error.PermissionDenied,
 		else => |e| std.posix.unexpectedErrno(e),
 	};
+}
+
+/// Caller owns the returned memory.
+fn getHome(allocator: std.mem.Allocator) ![]const u8
+{
+	const from_env = std.process.getEnvVarOwned(allocator, "HOME");
+	if (from_env) |home| {
+		return home;
+	} else |e| {
+		log.warn("couldn't determine home directory from HOME: {}\nfalling back to passwd", .{e});
+	}
+
+	// Why is getuid() not in std.posix…?
+	const uid = unistd.getuid();
+	const user_info = std.c.getpwuid(uid) orelse return error.UserNotFound;
+
+	const home_dir: CString = user_info.*.pw_dir orelse return error.NoHomeDir;
+	const len = std.mem.len(home_dir);
+
+	// The passwd data is vaguely owned by the kernel, so we should copy this out.
+	const copied: [:NUL]u8 = try allocator.allocSentinel(u8, len, NUL);
+	@memcpy(copied, home_dir[0..len]);
+
+	return copied;
+}
+
+fn openLogFile(allocator: std.mem.Allocator) !void
+{
+	const home = try getHome(allocator);
+	defer allocator.free(home);
+
+	var home_dir = try std.fs.openDirAbsolute(home, .{});
+	defer home_dir.close();
+	var log_dir = try home_dir.makeOpenPath(".local/var/log", .{});
+	defer log_dir.close();
+
+	log_file = try log_dir.createFile("floatty.log", .{});
 }
 
 /// Caller takes ownership of the returned array list, unless an error occurs.
@@ -751,6 +801,9 @@ pub fn main() !void
 {
 	const allocator = std.heap.c_allocator;
 
+	try openLogFile(allocator);
+	defer log_file.close();
+
 	var arglist = try collectArgs(allocator);
 	defer arglist.deinit();
 
@@ -832,6 +885,7 @@ pub fn main() !void
 	if (pid == 0) {
 		// Child code...
 		std.posix.close(pty_fd);
+		log_file.close();
 		const argsSlice: [:null]const ?CString = arglist.asTerminatedSlice();
 		const first = argsSlice[1] orelse unreachable;
 		const argv: [*:null]const ?CString = argsSlice[1..];
