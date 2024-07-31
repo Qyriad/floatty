@@ -195,7 +195,7 @@ fn collectArgs(allocator: std.mem.Allocator) !CStringCArray
 		copied[arg.len] = 0;
 		@memcpy(copied, arg);
 		std.debug.assert(copied[arg.len] == 0);
-		try arglist.append(copied);
+		try arglist.append(copied[0..arg.len :NUL]);
 	}
 
 	return arglist;
