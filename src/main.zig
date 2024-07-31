@@ -12,6 +12,8 @@ const cstrings = @import("cstrings.zig");
 const CString = cstrings.CString;
 const CStringCArray = cstrings.CStringCArray;
 
+const ContainerDecl = @import("meta.zig").ContainerDecl;
+
 /// Not to be confused with null.
 const NUL: u8 = 0;
 
@@ -62,6 +64,51 @@ const unistd = @cImport({
 	@cDefine("_XOPEN_SOURCE", "700");
 	@cInclude("unistd.h");
 });
+
+
+const SignalInfo = struct{
+	name: [:NUL]const u8,
+	number: i64,
+};
+
+const SIGNAL_COUNT: comptime_int = blk: {
+	var count = 0;
+	for (std.meta.declarations(std.posix.SIG)) |decl| {
+		if (@TypeOf(@field(std.posix.SIG, decl.name)) == comptime_int) {
+			count += 1;
+		}
+	}
+	break :blk count;
+};
+
+/// Compile-time generated constant of all Posix signals' names and signal numbers.
+const SIGNALS: [SIGNAL_COUNT]SignalInfo = blk: {
+
+	var ret: [SIGNAL_COUNT]SignalInfo = undefined;
+
+	for (ContainerDecl.getFrom(std.posix.SIG), 0..) |decl, idx| {
+		if (decl.valueIfType(comptime_int)) |value_ptr| {
+			ret[idx] = .{
+				.name = decl.name[0..(decl.name.len) :NUL],
+				.number = value_ptr.*,
+			};
+		}
+	}
+
+	break :blk ret[0..SIGNAL_COUNT].*;
+};
+
+/// Lookup a signal's name (e.g. "TERM") by its number (e.g., 15).
+fn signalName(number: i64) [*:NUL]const u8
+{
+	for (SIGNALS) |signal| {
+		if (signal.number == number) {
+			return signal.name;
+		}
+	}
+
+	unreachable;
+}
 
 var log_file: std.fs.File = undefined;
 
@@ -895,7 +942,22 @@ pub fn main() !void
 	defer {
 		// Gotta reap those children!
 		const status = std.posix.waitpid(pid, 0);
-		log.info("waitpid() returned {}", .{ status });
+		log.debug("waitpid() returned {}", .{status});
+		const wstatus: u32 = status.status;
+		if (std.c.W.IFEXITED(wstatus)) {
+			const exit_code = std.c.W.EXITSTATUS(wstatus);
+			if (exit_code != 0) {
+				eprintln("floatty: child exited with non-zero exit code {}", .{exit_code});
+			}
+		} else if (std.c.W.IFSIGNALED(wstatus)) {
+			const signum = std.c.W.TERMSIG(wstatus);
+			eprintln("floatty: child killed by SIG{s} (signal {})", .{signalName(signum), signum});
+		} else if (std.c.W.IFSTOPPED(wstatus)) {
+			const signum = std.c.W.STOPSIG(wstatus);
+			eprintln("floatty: child stopped by SIG{s} (signal {})", .{signalName(signum), signum});
+		} else {
+			eprintln("floatty: unknown waitpid() status {} (floatty bug)", .{status});
+		}
 	}
 
 	// Meanwhile here in the parent we'll be monitoring the PTY we connected the child
