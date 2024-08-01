@@ -142,7 +142,7 @@ fn openpt(control_type: OpenptControl) OpenptError!std.posix.fd_t
 		.AGAIN => return error.ExhaustedPtys,
 		.NOSR => return error.ExhaustedStreams,
 		else => |e| {
-			eprintln("posix_openpt() gave supposedly impossible error code {}", .{ e });
+			eprintln("posix_openpt() gave supposedly impossible error code {}", .{e});
 			return error.Unexpected;
 		},
 	}
@@ -161,9 +161,9 @@ fn unlockpt(fd: std.posix.fd_t) PtyError!void
 		.BADF => return error.NotAFileDescriptor,
 		.INVAL => return error.NotAPty,
 		else => |e| {
-			eprintln("unlockpt() gave supposedly impossible error code {}", .{ e });
+			eprintln("unlockpt() gave supposedly impossible error code {}", .{e});
 			return error.Unexpected;
-		}
+		},
 	}
 }
 
@@ -397,7 +397,7 @@ pub fn printUsage() void
 		// If we can't write to stdout for even the help message, then we might as well
 		// at least let the caller process know *something* went wrong.
 		// Writing to stderr probably won't work either, but we'll throw an attempt in anyway.
-		eprintln("floatty: error writing help message to stdout: {}", .{ e });
+		eprintln("floatty: error writing help message to stdout: {}", .{e});
 		std.process.exit(254);
 	};
 }
@@ -421,12 +421,12 @@ pub fn printHexString(str: []const u8) void
 			} else if (ch == ' ') {
 				print(" ", .{});
 			} else if (std.ascii.isControl(ch)) {
-				print("\\x{x:0>2}", .{ ch });
+				print("\\x{x:0>2}", .{ch});
 			} else {
-				print("{c}", .{ ch });
+				print("{c}", .{ch});
 			}
 		} else {
-			print("\\u{x:0>4}", .{ codepoint });
+			print("\\u{x:0>4}", .{codepoint});
 		}
 	}
 }
@@ -471,10 +471,29 @@ test "countLinesInWin" {
 		try text.append(codepoint);
 	}
 
-	println("testing width @ 320 -> 1", .{});
-	try std.testing.expectEqual(1, try countLinesInWin(std.heap.c_allocator, text.items, 320));
-	println("testing width @ 160 -> 2", .{});
-	try std.testing.expectEqual(2, try countLinesInWin(std.heap.c_allocator, text.items, 160));
+	const allocator = std.testing.allocator;
+	const hist = text.items;
+
+	// lol zig doesn't have inner functions or function expressions so we have to do this.
+	const winsz = struct{
+		fn winsz(width: comptime_int) std.posix.winsize
+		{
+			return .{
+				.ws_col = width,
+				.ws_row = 39,
+				.ws_xpixel = 0,
+				.ws_ypixel = 0,
+			};
+		}
+	}.winsz;
+
+	var reflow_320 = try countForReflow(allocator, hist, winsz(320));
+	defer reflow_320.deinit();
+	var reflow_160 = try countForReflow(allocator, hist, winsz(160));
+	defer reflow_160.deinit();
+
+	try std.testing.expectEqual(1, reflow_320.total_lines);
+	try std.testing.expectEqual(2, reflow_160.total_lines);
 }
 
 pub const WinLines = struct{
@@ -486,62 +505,25 @@ pub const WinLines = struct{
 	lines: std.ArrayList(Line),
 };
 
-pub fn countLinesInWin(allocator: std.mem.Allocator, codepoints: []const u21, winsize: u32) !u32
-{
-	const Cursor = struct{
-		row: u32 = 1,
-		col: u32 = 1,
-	};
-	const Line = struct{
-		width: u32 = 0,
-	};
+const Cursor = struct{
+	row: u32 = 1,
+	col: u32 = 1,
+};
 
-	const newline: u21 = '\n';
-	const carriage_return: u21 = '\r';
-	const escape: u21 = '\x1b';
-	const winwidth: f64 = @floatFromInt(winsize);
+const TermRow = struct{
+	columns: u32,
+	text: []const u21,
+};
 
-	var cur = Cursor{ };
-	// The right-most column that has text in it.
-	var textcol: u32 = 0;
-	// Virtual lines.
-	var lines = std.ArrayList(Line).init(allocator);
-	defer lines.deinit();
+const ReflowData = struct{
+	total_lines: u32,
+	term_rows: std.ArrayList(TermRow),
 
-	for (codepoints) |codepoint| {
-		if (codepoint == newline) {
-			try lines.append(.{ .width = textcol });
-			cur.row += 1;
-			cur.col = 1;
-			textcol = 0;
-		} else if (codepoint == carriage_return) {
-			cur.col = 1;
-		} else if (codepoint == escape) {
-			std.debug.panic("idk what to do with escape!!", .{});
-		} else {
-			cur.col += 1;
-			textcol = @max(cur.col - 1, textcol);
-		}
+	pub fn deinit(self: *ReflowData) void
+	{
+		self.*.term_rows.deinit();
 	}
-
-	// If there was a final newline, but nothing outputted on that line, then we don't
-	// count that as a line.
-	if (textcol != 0) {
-		try lines.append(.{ .width = textcol });
-	}
-
-	var total: u32 = 0;
-	for (lines.items) |line| {
-		// @floatFromInt() needs a type annotation to work, so this has to be
-		// a separate variable.
-		const line_width: f64 = @floatFromInt(line.width);
-		const visual_lines = line_width / winwidth;
-		total += @intFromFloat(@ceil(visual_lines));
-	}
-
-
-	return total;
-}
+};
 
 /// Reads and executes a callback on each buffer read until a read would block.
 fn readAndDo(
@@ -593,7 +575,7 @@ pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.po
 
 	// Set stdio file descriptors for this child process to the pty.
 	// TODO: should this also set stdin?
-	inline for(.{ STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO }) |fileno| {
+	inline for (.{ STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO }) |fileno| {
 		try std.posix.dup2(our_pty, fileno);
 	}
 
@@ -604,23 +586,14 @@ pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.po
 	return std.posix.execvpeZ(prog, argv, envp);
 }
 
-pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posix.winsize) !void
+
+/// Caller owns ReflowData.
+pub fn countForReflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posix.winsize) !ReflowData
 {
-	const Cursor = struct{
-		row: u32 = 1,
-		col: u32 = 1,
-	};
-
-	const TermRow = struct{
-		columns: u32,
-		text: []const u21,
-	};
-
 	const newline: u21 = '\n';
 	const carriage_return: u21 = '\r';
 	const escape: u21 = '\x1b';
 
-	const stdout = std.io.getStdOut();
 	const winwidth: f64 = @floatFromInt(winsize.ws_col);
 
 	var cur = Cursor{};
@@ -629,7 +602,6 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 
 	// TODO: reuse allocation between reflows?
 	var term_rows = std.ArrayList(TermRow).init(allocator);
-	defer term_rows.deinit();
 
 	var row_start: usize = 0;
 	for (hist, 0..) |codepoint, idx| {
@@ -671,12 +643,33 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 	// Figure out how many lines we're gonna need to reflow.
 	var total_lines: u32 = 0;
 	for (term_rows.items) |row| {
-		// @floatFromInt() needs a type annotation to work, so this has to be
-		// a separate variable.
+		// @floatFromInt() needs a type annotation to work.
 		const line_width: f64 = @floatFromInt(row.columns);
 		const visual_lines = line_width / winwidth;
 		total_lines += @intFromFloat(@ceil(visual_lines));
 	}
+
+	return .{
+		.total_lines = total_lines,
+		.term_rows = term_rows,
+	};
+}
+
+pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posix.winsize) !void
+{
+	const newline: u21 = '\n';
+	const carriage_return: u21 = '\r';
+	//const escape: u21 = '\x1b';
+
+	const stdout = std.io.getStdOut();
+	var cur = Cursor{};
+	// The right-most column that has text in it.
+	var textcol: u32 = 0;
+
+	var reflow_data = try countForReflow(allocator, hist, winsize);
+	defer reflow_data.deinit();
+	const total_lines = reflow_data.total_lines;
+	const term_rows = reflow_data.term_rows;
 	// Move up that many lines.
 	try stdout.writer().print("\r\x1b[{}F", .{total_lines});
 
@@ -715,9 +708,7 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 		// Otherwise, we have work to do.
 		var last_char: u21 = 0;
 		var last_count: u32 = 0;
-		// Columns left.
 		for (row.text) |codepoint| {
-
 			if (codepoint == newline) {
 				std.debug.panic("bruh this shouldn't happen", .{});
 			}
@@ -772,10 +763,10 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 
 	// Switch to file descriptor based handling for SIGCHLD and SIGWINCH,
 	// so we can multiplex them and PTY output.
-	const sigchld_fd = try handleSignalAsFile(&.{ std.posix.SIG.CHLD });
+	const sigchld_fd = try handleSignalAsFile(&.{std.posix.SIG.CHLD});
 	defer std.posix.close(sigchld_fd);
 	const sigchld = File{ .handle = sigchld_fd };
-	const sigwinch_fd = try handleSignalAsFile(&.{ std.posix.SIG.WINCH });
+	const sigwinch_fd = try handleSignalAsFile(&.{std.posix.SIG.WINCH});
 	defer std.posix.close(sigwinch_fd);
 	const sigwinch = File{ .handle = sigwinch_fd };
 
@@ -887,7 +878,7 @@ pub fn main() !void
 
 		eprintln(
 			"floatty: unrecognized option '{s}'\nTry 'floatty --help' for more information",
-			.{ argSlice },
+			.{argSlice},
 		);
 		std.process.exit(255);
 
@@ -895,7 +886,7 @@ pub fn main() !void
 		// I'll (maybe) add more args later.
 	}
 
-	log.debug("args: {}", .{ arglist.formatter("\"{s}\"") });
+	log.debug("args: {}", .{arglist.formatter("\"{s}\"")});
 
 	const pty_fd: c_int = try openpt(.BecomeNonControllingTerminal);
 	defer std.posix.close(pty_fd);
@@ -908,7 +899,7 @@ pub fn main() !void
 	// FIXME: use TIOCGPTPEER instead
 	const term_name = try ptsname(allocator, pty_fd);
 	defer allocator.free(term_name);
-	log.debug("Our terminal is {s}", .{ term_name });
+	log.debug("Our terminal is {s}", .{term_name});
 
 	const other_side = try std.posix.open(term_name, .{ .NOCTTY = false, .ACCMODE = .RDWR }, 0);
 	defer std.posix.close(other_side);
@@ -920,11 +911,11 @@ pub fn main() !void
 	// the epoll() event loop, the size won't be propagated to the float-pty until
 	// the parent terminal size changes again.
 	const parent_winsize = try getwinsz(std.posix.STDIN_FILENO);
-	log.debug("our win size: {}", .{ parent_winsize });
+	log.debug("our win size: {}", .{parent_winsize});
 	try setwinsz(other_side, parent_winsize);
 
 	const child_winsize = try getwinsz(other_side);
-	log.debug("winsize: {}", .{ child_winsize });
+	log.debug("winsize: {}", .{child_winsize});
 
 	// Spawn a new process, and then use setsid() and TIOCSCTTY to make this terminal
 	// the controlling terminal for that process, and then spawn the requested command.
@@ -964,7 +955,6 @@ pub fn main() !void
 	// to for output to forward to the non-float-pty, as well as SIGCHLD for when the
 	// command ends, and SIGWINCH to forward terminal size changes to the float-pty.
 
-	log.debug("forked to process {}", .{ pid });
+	log.debug("forked to process {}", .{pid});
 	try parentLoop(allocator, pty_fd);
-
 }
