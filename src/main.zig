@@ -565,7 +565,7 @@ fn readAndDiscard(reader: anytype) !void
 	}
 }
 
-pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.posix.fd_t) !void
+pub fn childProcess(prog: CString, argv: [*:null]const ?CString, our_pty: std.posix.fd_t) !u8
 {
 	// Become a session leader...
 	_ = try setsid();
@@ -835,7 +835,7 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 	}
 }
 
-pub fn main() !void
+pub fn main() !u8
 {
 	const allocator = std.heap.c_allocator;
 
@@ -849,12 +849,11 @@ pub fn main() !void
 		eprintln(
 			\\floatty: error: the following required arguments were not provided:
 			\\  <program>
-			\\
-			,
-			.{}
+			++ "\n",
+			.{},
 		);
 		printUsage();
-		std.process.exit(255);
+		return 255;
 	}
 
 	// Shitty, shotgun arg parser.
@@ -868,19 +867,19 @@ pub fn main() !void
 
 		if (streql(argSlice, "--help")) {
 			printUsage();
-			std.process.exit(0);
+			return 0;
 		}
 
 		if (streql(argSlice, "--version")) {
 			println("floatty 0.0.1", .{});
-			std.process.exit(0);
+			return 0;
 		}
 
 		eprintln(
 			"floatty: unrecognized option '{s}'\nTry 'floatty --help' for more information",
 			.{argSlice},
 		);
-		std.process.exit(255);
+		return 255;
 
 		// Yes this loop can only ever do one iteration, technically.
 		// I'll (maybe) add more args later.
@@ -957,4 +956,6 @@ pub fn main() !void
 
 	log.debug("forked to process {}", .{pid});
 	try parentLoop(allocator, pty_fd);
+
+	return 0;
 }
