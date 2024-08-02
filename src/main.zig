@@ -617,7 +617,7 @@ pub fn countForReflow(allocator: std.mem.Allocator, hist: []const u21, winsize: 
 			cur.row += 1;
 			cur.col = 1;
 			textcol = 0;
-			row_start = idx;
+			row_start = idx + 1;
 		} else if (codepoint == carriage_return) {
 			// \r doesn't change any existing output, but it does affect how future
 			// characters affect our lines.
@@ -659,7 +659,7 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 {
 	const newline: u21 = '\n';
 	const carriage_return: u21 = '\r';
-	//const escape: u21 = '\x1b';
+	const escape: u21 = '\x1b';
 
 	const stdout = std.io.getStdOut();
 	var cur = Cursor{};
@@ -708,24 +708,31 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 		// Otherwise, we have work to do.
 		var last_char: u21 = 0;
 		var last_count: u32 = 0;
+		// Amount of columns in this line we've already taken care of.
+		var cols_advanced: u32 = 0;
 		for (row.text) |codepoint| {
 			if (codepoint == newline) {
 				std.debug.panic("bruh this shouldn't happen", .{});
 			}
 
-			const left: i64 = @as(i64, row.columns) - @as(i64, cur.col);
 			if (codepoint == carriage_return) {
 				// Reset state.
-
 				try line_buffer.append('\r');
 				cur.col = 1;
-				// FIXME: textcol?
 				last_char = 0;
 				last_count = 0;
+				cols_advanced = 0;
+
 				continue;
+			} else if (codepoint == escape) {
+				std.debug.panic("what", .{});
 			}
 
 			defer last_char = codepoint;
+			defer cols_advanced += 1;
+
+			const left: i64 = (row.columns + 1) - cols_advanced;
+			const available_cols: i64 = winsize.ws_col - cur.col;
 
 			if (codepoint == last_char) {
 				last_count += 1;
@@ -735,15 +742,14 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 
 			// Hueristic: if we see a bunch of the same characters in a row, that segment
 			// can *probably* be lengthed or shortened as needed.
-
-			// FIXME: this is significantly overshrinking rn.
-			if ((left > winsize.ws_col) and (last_count >= threshold)) {
+			// FIXME: this does not lengthen past the original width.
+			if (left > available_cols and last_count >= threshold) {
 				// Don't output anything.
 				continue;
 			}
 
 			// Otherwise output normally.
-			var buffer = std.mem.zeroes([8]u8);
+			var buffer: [8]u8 = std.mem.zeroes([8]u8);
 			const len = try std.unicode.utf8Encode(codepoint, &buffer);
 			try line_buffer.appendSlice(buffer[0..len]);
 			cur.col += 1;
@@ -820,9 +826,9 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 				current_size = try getwinsz(STDIN_FILENO);
 				try setwinsz(pty_fd, current_size);
 
+				// Clear and redraw known lines.
 				try reflow(allocator, known_history.items, current_size);
 
-				// Clear and redraw known lines.
 			} else if (fd == sigchld_fd) {
 				// We don't want to break immediately, because we could still have non-signal
 				// events left to handle.
