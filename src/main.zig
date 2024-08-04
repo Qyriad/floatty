@@ -526,33 +526,34 @@ const ReflowData = struct{
 	}
 };
 
-/// Reads and executes a callback on each buffer read until a read would block.
-fn readAndDo(
-	reader: anytype,
-	handler: type,
-) (@TypeOf(reader).Error || handler.Error)!void
+
+/// Iterator that reads until error.WouldBlock, but propagates other errors.
+fn NonblockingReader(ReaderT: type) type
 {
-	var buffer = std.mem.zeroes([4096]u8);
-	var count: usize = 1;
-	while (count > 0) {
-		if (reader.read(&buffer)) |amount_read| {
-			count = amount_read;
-		} else |err| switch (err) {
-			error.WouldBlock => return,
-			else => |e| return e,
+	return struct{
+		const Self = @This();
+
+		buffer: []u8,
+		reader: ReaderT,
+
+		pub fn init(reader: ReaderT, buffer: []u8) Self
+		{
+			return Self{
+				.buffer = buffer,
+				.reader = reader,
+			};
 		}
 
-		try handler.callback(buffer[0..count]);
-	}
+		pub fn next(self: Self) !?usize
+		{
+			return self.reader.read(self.buffer) catch |e| switch (e) {
+				error.WouldBlock => return null,
+				else => return e,
+			};
+		}
+	};
 }
-
-const printHandler = struct{
-	const Error = std.fs.File.WriteError;
-	fn callback(buffer: []const u8) std.fs.File.WriteError!void
-	{
-		try std.io.getStdOut().writeAll(buffer);
-	}
-};
+const NonblockingFileReader: type = NonblockingReader(std.fs.File.Reader);
 
 /// Reads and discards until a read would block.
 fn readAndDiscard(reader: anytype) !void
@@ -801,24 +802,22 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 
 		for (fd_list.items) |fd| {
 			if (fd == pty_fd) {
+
 				var buffer = std.mem.zeroes([4096]u8);
-				var count: usize = 1;
-				inner: while (count > 0) {
-					if (pty_file.read(&buffer)) |amount_read| {
-						count = amount_read;
-					} else |err| switch (err) {
-						error.WouldBlock => break :inner,
-						else => return err,
-					}
-					try std.io.getStdOut().writeAll(buffer[0..count]);
-					var iterator = std.unicode.Utf8Iterator{
-						.bytes = buffer[0..count],
-						.i = 0,
-					};
-					while (iterator.nextCodepoint()) |codepoint| {
+				var reader = NonblockingFileReader.init(pty_file.reader(), &buffer);
+				while (try reader.next()) |amount_read| {
+					const read_slice = buffer[0..amount_read];
+
+					// Forward the child's output to our output verbatim,
+					try std.io.getStdOut().writeAll(read_slice);
+
+					// but also keep track of it, as codepoints.
+					var codepoints = std.unicode.Utf8Iterator { .bytes = read_slice, .i = 0 };
+					while (codepoints.nextCodepoint()) |codepoint| {
 						try known_history.append(codepoint);
 					}
 				}
+
 			} else if (fd == sigwinch_fd) {
 				// Read and discard to clear the "event" from our poller.
 				try readAndDiscard(sigwinch.reader());
