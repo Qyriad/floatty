@@ -3,6 +3,7 @@ const print: fn (comptime []const u8, anytype) void = std.debug.print;
 const panic: fn (comptime []const u8, anytype) noreturn = std.debug.panic;
 const log = std.log;
 const fd_t = std.posix.fd_t;
+const Allocator = std.mem.Allocator;
 
 const STDIN_FILENO = std.posix.STDIN_FILENO;
 const STDOUT_FILENO = std.posix.STDOUT_FILENO;
@@ -841,17 +842,34 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 	}
 }
 
-pub fn main() !u8
+const CmdlineArgsResult = union(enum) {
+	exit_code: u8,
+	/// Caller owned.
+	subproc: struct{
+		argc: usize,
+		argv: [*:null]?CString,
+	},
+};
+
+// Shitty, shotgun arg parser.
+fn handleArgs(allocator: Allocator) !CmdlineArgsResult
 {
-	const allocator = std.heap.c_allocator;
+	var args = try std.process.ArgIterator.initWithAllocator(allocator);
+	defer args.deinit();
 
-	try openLogFile(allocator);
-	defer log_file.close();
+	// Should be impossible.
+	// If we don't even have argv[0] then we were executed incorrectly in the first place.
+	// On the other hand, we don't care about the actual value of argv[0].
+	const executed_as = args.next() orelse unreachable;
+	_ = executed_as;
 
-	var arglist = try collectArgs(allocator);
-	defer arglist.deinit();
-
-	if (arglist.asSlice().len < 2) {
+	// The first argument is special.
+	// We can't take any --options after accepting positional arguments, so that we don't
+	// interpret things like `floatty ls --help` as `--help` for us.
+	// Also we don't have any cases where --multiple --options make sense at a time, yet,
+	// since we only have --version and --help.
+	const first: [:NUL]const u8 = args.next() orelse {
+		// No arguments provided.
 		eprintln(
 			\\floatty: error: the following required arguments were not provided:
 			\\  <program>
@@ -859,39 +877,80 @@ pub fn main() !u8
 			.{},
 		);
 		printUsage();
-		return 255;
-	}
+		return .{ .exit_code = 255 };
+	};
 
-	// Shitty, shotgun arg parser.
-	for (arglist.asSlice()[1..]) |arg| {
-		const argSlice: []const u8 = arg[0..std.mem.len(arg)];
-		// We can't take any --options after accepting positional arguments, so that
-		// we don't interpret things like `floatty ls --help` as `--help` for us.
-		if (argSlice[0] != '-') {
-			break;
-		}
+	if (first[0] == '-') {
+		// No outlet.
 
-		if (streql(argSlice, "--help")) {
+		if (streql(first, "--help")) {
 			printUsage();
-			return 0;
+			return .{ .exit_code = 0 };
 		}
 
-		if (streql(argSlice, "--version")) {
+		if (std.mem.eql(u8, first, "--version")) {
 			println("floatty 0.0.1", .{});
-			return 0;
+			return .{ .exit_code = 0 };
 		}
 
 		eprintln(
 			"floatty: unrecognized option '{s}'\nTry 'floatty --help' for more information",
-			.{argSlice},
+			.{first},
 		);
-		return 255;
-
-		// Yes this loop can only ever do one iteration, technically.
-		// I'll (maybe) add more args later.
+		return .{ .exit_code = 255 };
 	}
 
-	log.debug("args: {}", .{arglist.formatter("\"{s}\"")});
+	// - 1 as we do not include the `executed_as` argument.
+	const child_argc = args.inner.count - 1;
+
+	// Note: no defer free. Caller takes ownership.
+	var child_args: [*:null]?CString = try allocator.allocSentinel(?CString, child_argc, null);
+	var first_copied: [*:NUL]u8 = try allocator.allocSentinel(u8, first.len, NUL);
+	@memcpy(first_copied, first);
+	first_copied[first.len] = NUL;
+	child_args[0] = first_copied[0..first.len :NUL];
+
+	var arg_pos: usize = 1;
+	while (args.next()) |arg| : (arg_pos += 1) {
+		var copied: [*:NUL]u8 = try allocator.allocSentinel(u8, arg.len, NUL);
+		@memcpy(copied, arg);
+		copied[arg.len] = NUL;
+		child_args[arg_pos] = copied[0..arg.len :NUL];
+	}
+
+	std.debug.assert(child_argc == arg_pos);
+
+	return .{ .subproc = .{
+		.argc = arg_pos,
+		.argv = child_args,
+	} };
+}
+
+pub fn main() !u8
+{
+	const allocator = std.heap.c_allocator;
+
+	try openLogFile(allocator);
+	defer log_file.close();
+
+	const child_args = switch(try handleArgs(allocator)) {
+		.exit_code => |code| return code,
+		.subproc => |args| args,
+	};
+
+
+	// Note: this does not get run in the child code
+	// since execve() replaces the process first.
+	defer {
+		const argv_slice = child_args.argv[0..child_args.argc];
+		for (argv_slice) |maybe_arg| {
+			// The only null here should be the terminator, which wont be included in argc.
+			const arg = maybe_arg orelse unreachable;
+			const slice = arg[0..std.mem.len(arg)];
+			allocator.free(slice);
+		}
+		allocator.free(argv_slice);
+	}
 
 	const pty_fd: c_int = try openpt(.BecomeNonControllingTerminal);
 	defer std.posix.close(pty_fd);
@@ -929,10 +988,8 @@ pub fn main() !u8
 		// Child code...
 		std.posix.close(pty_fd);
 		log_file.close();
-		const argsSlice: [:null]const ?CString = arglist.asTerminatedSlice();
-		const first = argsSlice[1] orelse unreachable;
-		const argv: [*:null]const ?CString = argsSlice[1..];
-		return childProcess(first, argv, other_side);
+		const first = child_args.argv[0] orelse unreachable;
+		return childProcess(first, child_args.argv, other_side);
 	}
 
 	defer {
