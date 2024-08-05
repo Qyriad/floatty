@@ -769,10 +769,14 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 	defer std.posix.close(sigwinch_fd);
 	const sigwinch = File{ .handle = sigwinch_fd };
 
+	const stdin = std.io.getStdIn();
+	const stdin_fd = stdin.handle;
+	_ = try std.posix.fcntl(stdin_fd, std.c.F.SETFL, std.os.linux.IN.NONBLOCK);
+
 	// Now setup polling for them.
 	const poller = try BasicPoller.init(
 		allocator,
-		&.{ pty_fd, sigchld_fd, sigwinch_fd },
+		&.{ pty_fd, stdin_fd, sigchld_fd, sigwinch_fd },
 	);
 	defer poller.deinit();
 
@@ -809,6 +813,17 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 					}
 				}
 
+			} else if (fd == stdin_fd) {
+				var buffer = std.mem.zeroes([4096]u8);
+				var reader = NonblockingFileReader.init(stdin.reader(), &buffer);
+				while (try reader.next()) |amount_read| {
+					const read_slice = buffer[0..amount_read];
+
+					// Forward our stdin to the child's stdin verbatim,
+					// FIXME: this also writes to the output, resulting in double output.
+					// faketty also has this problem at least
+					try pty_file.writeAll(read_slice);
+				}
 			} else if (fd == sigwinch_fd) {
 				// Read and discard to clear the "event" from our poller.
 				try readAndDiscard(sigwinch.reader());
