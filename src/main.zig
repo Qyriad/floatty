@@ -497,15 +497,6 @@ test "countLinesInWin" {
 	try std.testing.expectEqual(2, reflow_160.total_lines);
 }
 
-pub const WinLines = struct{
-	pub const Line = struct{
-		width: u32,
-		// Caller continues to own these codepoints.
-		codepoints: []const u21,
-	};
-	lines: std.ArrayList(Line),
-};
-
 const Cursor = struct{
 	row: u32 = 1,
 	col: u32 = 1,
