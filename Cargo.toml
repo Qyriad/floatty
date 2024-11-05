@@ -1,0 +1,11 @@
+[package]
+name = "floatty"
+version = "0.1.0"
+edition = "2021"
+authors = ["Qyriad <qyriad@qyriad.me>"]
+description = "Floatty TUI terminal emulator"
+repository = "https://github.com/Qyriad/floatty"
+readme = true
+license = "MIT"
+
+[dependencies]
