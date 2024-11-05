@@ -65,7 +65,9 @@ in stdenv.mkDerivation (self: {
 		mkShell,
 		clang-tools,
 		zls,
-	}: mkShell {
+	}: let
+		mkShell' = mkShell.override { inherit stdenv; };
+	in mkShell' {
 		inputsFrom = [ self.finalPackage ];
 		packages = [ clang-tools zls ];
 	};
