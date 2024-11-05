@@ -31,7 +31,7 @@ pub enum OpenptError
 
 impl OpenptError
 {
-	const fn try_from_raw(raw: Errno) -> Option<Self>
+	pub const fn try_from_raw(raw: Errno) -> Option<Self>
 	{
 		use Errno::*;
 		use OpenptError::*;
@@ -53,7 +53,7 @@ impl OpenptError
 		Some(openpt_error)
 	}
 
-	fn from_errno(raw: Errno) -> Self
+	pub fn from_errno(raw: Errno) -> Self
 	{
 		match Self::try_from_raw(raw) {
 			Some(err) => err,
@@ -63,7 +63,7 @@ impl OpenptError
 		}
 	}
 
-	const fn to_errno(self) -> Errno
+	pub const fn to_errno(self) -> Errno
 	{
 		use Errno::*;
 		use OpenptError::*;
@@ -75,7 +75,7 @@ impl OpenptError
 		}
 	}
 
-	const fn as_errno(self) -> &'static Errno
+	pub const fn as_errno(self) -> &'static Errno
 	{
 		use Errno::*;
 		use OpenptError::*;
@@ -88,7 +88,7 @@ impl OpenptError
 	}
 
 	/// Not to be confused with [`std::error::Error::description()`].
-	const fn desc(self) -> &'static str
+	pub const fn desc(self) -> &'static str
 	{
 		// Descriptions from `posix_openpt(3p)`.
 		use OpenptError::*;
