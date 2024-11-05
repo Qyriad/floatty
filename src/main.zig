@@ -242,6 +242,11 @@ fn csctty(fd: std.posix.fd_t) error{ PermissionDenied, Unexpected }!void
 	};
 }
 
+fn setNonblocking(fd: std.posix.fd_t) !void
+{
+	_ = try std.posix.fcntl(fd, std.c.F.SETFL, std.os.linux.IN.NONBLOCK);
+}
+
 /// Caller owns the returned memory.
 fn getHome(allocator: std.mem.Allocator) ![]const u8
 {
@@ -302,11 +307,63 @@ fn collectArgs(allocator: std.mem.Allocator) !CStringCArray
 const BasicPoller = struct{
 	const Self = @This();
 
+	const Pollable = union(enum){
+		fd: std.posix.fd_t,
+		signal: comptime_int,
+	};
+
 	fds: []const std.posix.fd_t,
 
 	poller: std.posix.fd_t,
 
 	events: std.ArrayList(std.os.linux.epoll_event),
+
+	pub fn init2(allocator: std.mem.Allocator, pollables: []const Pollable) !Self
+	{
+		const EPOLL = std.os.linux.EPOLL;
+
+		const poller = try std.posix.epoll_create1(0);
+		errdefer std.posix.close(poller);
+		var events = std.ArrayList(std.os.linux.epoll_event).init(allocator);
+		errdefer events.deinit();
+
+		var sigset = std.posix.empty_sigset;
+
+		for (pollables) |pollable| switch (pollable) {
+			.fd => |fd| {
+				var poll_event = std.os.linux.epoll_event{
+					.events = EPOLL.IN | EPOLL.ERR | EPOLL.HUP,
+					.data = std.os.linux.epoll_data{
+						.fd = fd,
+					},
+				};
+				try std.posix.epoll_ctl(poller, EPOLL.CTL_ADD, fd, &poll_event);
+				try events.append(poll_event);
+			},
+			.signal => |signal| {
+				// sigaddset() is posix standard, not sure why it's in std.os.linux?
+				std.os.linux.sigaddset(&sigset, signal);
+			},
+			else => unreachable,
+		};
+
+		if (sigset != std.posix.empty_sigset) {
+			// We have to block a signal to be able to handle it as a file.
+			std.posix.sigprocmask(std.c.SIG.BLOCK, &sigset, null);
+
+			// signalfd() is a Linux syscall, not posix at all.
+			const fd = std.posix.signalfd(-1, &sigset, std.os.linux.SFD.NONBLOCK);
+
+			var poll_event = std.os.linux.epoll_event{
+				.events = EPOLL.IN | EPOLL.ERR | EPOLL.HUP,
+				.data = std.os.linux.epoll_data{
+					.fd = fd,
+				},
+			};
+			try std.posix.epoll_ctl(poller, EPOLL.CTL_ADD, fd, &poll_event);
+			try events.append(poll_event);
+		}
+	}
 
 	pub fn init(allocator: std.mem.Allocator, file_descriptors: []const std.posix.fd_t) !Self
 	{
@@ -616,7 +673,8 @@ pub fn countForReflow(allocator: std.mem.Allocator, hist: []const u21, winsize: 
 			// characters affect our lines.
 			cur.col = 1;
 		} else if (codepoint == escape) {
-			std.debug.panic("todo!", .{});
+			//
+			//std.debug.panic("todo!", .{});
 		} else {
 			cur.col += 1;
 			// The cursor's column is 1-indexed, but what column actually has output
@@ -717,7 +775,7 @@ pub fn reflow(allocator: std.mem.Allocator, hist: []const u21, winsize: std.posi
 				cols_advanced = 0;
 
 				continue;
-			} else if (codepoint == escape) {
+			} else if (codepoint == escape and false) {
 				std.debug.panic("what", .{});
 			}
 
@@ -785,10 +843,6 @@ pub fn parentLoop(allocator: std.mem.Allocator, pty_fd: fd_t) !void
 
 	var current_size = try getwinsz(STDIN_FILENO);
 	try setwinsz(pty_fd, current_size);
-
-	var historyBuffer = std.ArrayList(u8).init(allocator);
-	defer historyBuffer.deinit();
-	try historyBuffer.ensureTotalCapacity(8 * 1024);
 
 	var keep_going = true;
 	while (keep_going) {
