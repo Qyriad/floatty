@@ -13,12 +13,11 @@
 	commonArgs = {
 		src = lib.fileset.toSource {
 			root = ./.;
-			fileset = lib.fileset.unions [ ];
-			#fileset = lib.fileset.unions [
-			#	./src
-			#	./Cargo.toml
-			#	./Cargo.lock
-			#];
+			fileset = lib.fileset.unions [
+				./src
+				./Cargo.toml
+				./Cargo.lock
+			];
 		};
 
 		strictDeps = true;
