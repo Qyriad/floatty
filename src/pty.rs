@@ -1,13 +1,14 @@
-use std::ffi::{OsStr, c_char};
-use std::path::Path;
+use std::ffi::{OsString, c_char};
+use std::path::{PathBuf, Path};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::sync::LazyLock;
 
 use bstr::ByteSlice;
-use bytes::{Bytes, BytesMut};
 use nix::errno::Errno;
 use tap::Pipe;
+
+use crate::{DataBuf, DataBufExt, DataExt};
 
 mod openpt_error;
 pub use openpt_error::OpenptError;
@@ -98,9 +99,9 @@ pub fn ptsname(pty_fd: BorrowedFd) -> Result<Box<Path>, PtsnameError>
 {
 	// + 1 for the NUL terminator.
 	let buf_len = *TTY_NAME_MAX + 1;
-	let mut buffer = BytesMut::zeroed(buf_len);
+	let mut buffer = DataBuf::zeroed(buf_len);
 	debug_assert_eq!(buf_len, buffer.len());
-	let buf_ptr: *mut c_char = buffer.as_mut_ptr().cast();
+	let buf_ptr: *mut c_char = buffer.as_c_buf_mut();
 
 	let fd = pty_fd.as_raw_fd();
 	// SAFETY: `buf_ptr` is non-null, and has already been zeroed with `buffer.len()` characters.
@@ -122,12 +123,15 @@ pub fn ptsname(pty_fd: BorrowedFd) -> Result<Box<Path>, PtsnameError>
 	};
 
 	buffer.truncate(nul_pos);
-	let bytes: Bytes = buffer.freeze();
 
-	let path: Box<Path> = bytes
-		.pipe_deref(OsStr::from_bytes)
-		.pipe(Path::new)
-		.pipe(Box::from);
+	// Box<Path> instead of PathBuf because we have no need for resizing.
+	let path: Box<Path> = buffer
+		// Free.
+		.pipe(OsString::from_vec)
+		// Free.
+		.pipe(<PathBuf as From<OsString>>::from)
+		// Shrink-to-fit.
+		.pipe(PathBuf::into_boxed_path);
 
 	Ok(path)
 }
