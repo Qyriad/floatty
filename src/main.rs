@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal};
 
 #[allow(unused_imports)]
 use {
@@ -13,7 +13,7 @@ use {
 	tap::prelude::*,
 };
 
-use floatty::pty::{openpt, unlockpt, ptsname, OpenptControl};
+use floatty::pty::{openpt, unlockpt, ptsname, getwinsz, setwinsz, OpenptControl};
 use floatty::fdops::FdOps;
 
 fn main() -> miette::Result<()>
@@ -43,6 +43,9 @@ fn main() -> miette::Result<()>
 	debug_assert!(other_side.is_terminal());
 
 	debug!("Got file descriptors {} and {}", pty_fd.as_raw_fd(), other_side.as_raw_fd());
+
+	let current_size = getwinsz(io::stdin().as_fd());
+	setwinsz(pty_fd.as_fd(), current_size);
 
 	Ok(())
 }

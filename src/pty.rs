@@ -6,7 +6,11 @@ use std::sync::LazyLock;
 
 use bstr::ByteSlice;
 use nix::errno::Errno;
-use tap::Pipe;
+#[allow(unused_imports)]
+use {
+    log::{trace, debug, info, warn, error},
+	tap::prelude::*,
+};
 
 use crate::{DataBuf, DataBufExt, DataExt};
 
@@ -134,4 +138,33 @@ pub fn ptsname(pty_fd: BorrowedFd) -> Result<Box<Path>, PtsnameError>
 		.pipe(PathBuf::into_boxed_path);
 
 	Ok(path)
+}
+
+pub fn getwinsz(fd: BorrowedFd) -> libc::winsize
+{
+	let mut winsize = libc::winsize {
+		ws_row: 0,
+		ws_col: 0,
+		ws_xpixel: 0,
+		ws_ypixel: 0,
+	};
+
+	let code = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &raw mut winsize) };
+	trace!("ioctl(TIOCGWINSZ) returned {code}");
+	if code < 0 {
+		let errno = Errno::last();
+		panic!("ioctl(TIOCGWINSZ) returned supposedly imposssible errno {errno}");
+	}
+
+	winsize
+}
+
+pub fn setwinsz(fd: BorrowedFd, size: libc::winsize)
+{
+	let code = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, &raw const size) };
+	trace!("ioctl(TIOCSWINSZ) returned {code}");
+	if code < 0 {
+		let errno = Errno::last();
+		panic!("ioctl(TIOCSWINSZ) returned supposedly imposssible errno {errno}");
+	}
 }
