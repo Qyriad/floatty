@@ -20,6 +20,8 @@ mod unlockpt_error;
 pub use unlockpt_error::UnlockptError;
 mod ptsname_error;
 pub use ptsname_error::PtsnameError;
+mod csctty_error;
+pub use csctty_error::CscttyError;
 
 pub const NUL_CHAR: c_char = 0;
 pub const NUL_BYTE: u8 = 0;
@@ -167,4 +169,17 @@ pub fn setwinsz(fd: BorrowedFd, size: libc::winsize)
 		let errno = Errno::last();
 		panic!("ioctl(TIOCSWINSZ) returned supposedly imposssible errno {errno}");
 	}
+}
+
+pub fn csctty(fd: BorrowedFd) -> Result<(), CscttyError>
+{
+	let code = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSCTTY) };
+	let errno = Errno::last();
+	trace!("ioctl(TIOCSCTTY) returned {code}");
+	if code < 0 {
+		let err = CscttyError::from_errno(errno);
+		return Err(err);
+	}
+
+	Ok(())
 }
