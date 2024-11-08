@@ -1,7 +1,8 @@
 use std::fs::File;
+use std::io::{self, IsTerminal};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::OpenOptionsExt;
-use std::io::{self, IsTerminal};
+use std::path::PathBuf;
 
 #[allow(unused_imports)]
 use {
@@ -9,7 +10,7 @@ use {
 	bytes::{BufMut, Bytes},
 	log::{trace, debug, info, warn, error},
 	miette::{Context as _, Diagnostic, Error, IntoDiagnostic},
-	nix::errno::Errno,
+	nix::{errno::Errno, unistd::ForkResult},
 	tap::prelude::*,
 };
 
@@ -46,6 +47,24 @@ fn main() -> miette::Result<()>
 
 	let current_size = getwinsz(io::stdin().as_fd());
 	setwinsz(pty_fd.as_fd(), current_size);
+
+	// Spawn a new process, and then use setsid() and TIOCSCTTY to make this terminal
+	// the controlling terminal for that process, and then spawn the requested command.
+	use ForkResult::*;
+	match unsafe { nix::unistd::fork() } {
+		Ok(Child) => {
+			drop(pty_fd);
+
+			let prog = PathBuf::from("/run/current-system/sw/bin/tty").into_boxed_path();
+			floatty::child::child_process(prog, OwnedFd::from(other_side))?;
+		},
+		Ok(Parent { child }) => {
+			floatty::parent::parent_process(child, pty_fd)?;
+		},
+		Err(e) => {
+			panic!("fork() failed: {e}");
+		},
+	}
 
 	Ok(())
 }
