@@ -37,9 +37,10 @@ in craneLib'.buildPackage (commonArgs // {
 	passthru.mkDevShell = {
 		self,
 		rust-analyzer,
+		zls,
 	}: craneLib.devShell {
 		inputsFrom = [ self ];
-		packages = [ rust-analyzer ];
+		packages = [ rust-analyzer zls ];
 	};
 
 	passthru.clippy = craneLib'.cargoClippy (commonArgs // {
