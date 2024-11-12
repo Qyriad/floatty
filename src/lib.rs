@@ -27,11 +27,11 @@
 	core_io_borrowed_buf,
 	raw_os_error_ty,
 	transmutability,
+	os_str_display,
 )]
 
+#![expect(incomplete_features)]
 #![warn(fuzzy_provenance_casts)]
-
-use std::ffi::c_char;
 
 pub mod child;
 pub mod pty;
@@ -44,38 +44,5 @@ pub mod parent;
 
 pub mod poller;
 
-/// Like `Path`, but for data!
-pub type Data = [u8];
-
-/// Like `PathBuf`, but for data!
-pub type DataBuf = Vec<u8>;
-
-pub trait DataBufExt
-{
-    fn zeroed(len: usize) -> Self;
-}
-impl DataBufExt for DataBuf
-{
-    fn zeroed(len: usize) -> Self
-    {
-        vec![0u8; len]
-    }
-}
-
-pub trait DataExt
-{
-    fn as_c_buf(&self) -> *const c_char;
-    fn as_c_buf_mut(&mut self) -> *mut c_char;
-}
-impl DataExt for Data
-{
-    fn as_c_buf(&self) -> *const c_char
-    {
-        self.as_ptr().cast()
-    }
-
-    fn as_c_buf_mut(&mut self) -> *mut c_char
-    {
-        self.as_mut_ptr().cast()
-    }
-}
+pub mod vecext;
+pub use vecext::{Data, DataExt, DataBuf, DataBufExt, VecExt};

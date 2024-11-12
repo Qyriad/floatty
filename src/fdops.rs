@@ -44,7 +44,7 @@ pub trait FdOps
 	}
 }
 
-impl<'s> FdOps for BorrowedFd<'s>
+impl FdOps for BorrowedFd<'_>
 {
 	fn set_fl(&mut self, flags: OFlag)
 	{

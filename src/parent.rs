@@ -1,6 +1,8 @@
+use std::io::{self, Write};
 use std::ffi::c_int;
 use std::fs::File;
 use std::ptr;
+use std::ops::ControlFlow;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 #[allow(unused_imports)]
@@ -17,6 +19,8 @@ use nix::sys::{
 	signal::{Signal, SigmaskHow, sigprocmask},
 	signalfd::{SfdFlags, SigSet},
 };
+
+use crate::poller::{Poller, PollInterest};
 
 mod signalfd_error;
 pub use signalfd_error::SignalfdError;
@@ -36,8 +40,8 @@ pub fn signalfd(fd: RawFd, mask: &SigSet, flags: SfdFlags) -> Result<RawFd, Sign
 	Ok(signal_fd)
 }
 
-/// Block a signal and convert it to a file descriptor.
-pub fn handle_signals_as_file(signals: &[Signal]) -> miette::Result<File>
+/// Block a signal and convert it to a [File].
+fn handle_signals_as_file(signals: &[Signal]) -> miette::Result<File>
 {
 	let mut set = SigSet::empty();
 	for &sig in signals {
@@ -59,26 +63,45 @@ pub fn handle_signals_as_file(signals: &[Signal]) -> miette::Result<File>
 	Ok(signal_file)
 }
 
-fn parent_loop(child: Pid, pty: &mut File) -> miette::Result<()>
+fn parent_loop(pty: File) -> miette::Result<()>
 {
+	let pty_key = pty.as_raw_fd() as u64;
 	// Switch to file descriptor based handling for SIGCHLD and SIGWINCH,
 	// so we can multiplex them and PTY output.
 	let sigchld: File = handle_signals_as_file(&[Signal::SIGCHLD])
 		.context("turning SIGCHLD into a file descriptor")?;
+	let sigchld_key = sigchld.as_raw_fd() as u64;
 	trace!("turned SIGCHLD into file descriptor {}", sigchld.as_raw_fd());
+
 	let sigwinch: File = handle_signals_as_file(&[Signal::SIGWINCH])
 		.context("turning SIGWINCH into a file descriptor")?;
+	let sigwinch_key = sigwinch.as_raw_fd() as u64;
 	trace!("turned SIGWINCH into file descriptor {}", sigwinch.as_raw_fd());
 
-	use polling::Event;
-	let poller = polling::Poller::new().into_diagnostic()?;
-	unsafe { poller.add(&sigchld, Event::readable(0)) }.into_diagnostic()?;
-	unsafe { poller.add(&sigwinch, Event::readable(0)) }.into_diagnostic()?;
-	unsafe { poller.add(&*pty, Event::readable(0)) }.into_diagnostic()?;
+	let poll_sigchld = PollInterest::read(sigchld);
+	let poll_sigwinch = PollInterest::read(sigwinch);
+	let poll_pty = PollInterest::read(pty);
 
-	poller.delete(&sigchld).into_diagnostic()?;
-	poller.delete(&sigwinch).into_diagnostic()?;
-	poller.delete(&*pty).into_diagnostic()?;
+	let sources = [poll_sigchld, poll_sigwinch, poll_pty];
+	let mut poller = Poller::with_sources(sources)
+		.context("initializing pollers for SIGCHLD, SIGWINCH, and child PTY")?;
+
+	let mut stdout = io::stdout();
+	poller.each_with(&mut stdout, |stdout, event, data| {
+		debug!("got event: {event:?}");
+
+		if event.key as u64 == pty_key {
+			stdout.write_all(&data).unwrap();
+		} else if event.key as u64 == sigwinch_key {
+			trace!("got sigwinch!");
+		} else if event.key as u64 == sigchld_key {
+			return ControlFlow::Break(());
+		}
+
+		ControlFlow::Continue(())
+	})?;
+
+	info!("exited poll loop");
 
 	Ok(())
 }
@@ -88,9 +111,9 @@ pub fn parent_process(child: Pid, pty_fd: OwnedFd) -> miette::Result<()>
 	info!("forked to process {child}");
 
 	// We must not close this file before we waitpid().
-	let mut pty_file = File::from(pty_fd);
+	let pty_file = File::from(pty_fd);
 
-	let result = parent_loop(child, &mut pty_file);
+	let result = parent_loop(pty_file);
 
 	// Gotta reap those children!
 	let status = nix::sys::wait::waitpid(child, None)
@@ -103,6 +126,7 @@ pub fn parent_process(child: Pid, pty_fd: OwnedFd) -> miette::Result<()>
 		Exited(_pid, exit_code) if exit_code != 0 => {
 			eprintln!("floatty: child exited with non-zero exit code {exit_code}");
 		},
+		Exited(_pid, _exit_code) => (),
 		Signaled(_pid, signal, _dumped) => {
 			let name = signal.as_str();
 			let number = signal as i32;

@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 use std::io;
@@ -16,7 +17,7 @@ use {
 
 use crate::pty::csctty;
 
-pub fn child_process(prog: Box<Path>, our_pty: OwnedFd) -> miette::Result<()>
+pub fn child_process(prog: Box<Path>, args: Box<[Box<OsStr>]>, our_pty: OwnedFd) -> miette::Result<()>
 {
 	// Become a session leader...
 	let pgid = nix::unistd::setsid().into_diagnostic()?;
@@ -43,7 +44,7 @@ pub fn child_process(prog: Box<Path>, our_pty: OwnedFd) -> miette::Result<()>
 	drop(our_pty);
 
 	let err = Command::new(prog.as_ref())
-		.arg(prog.as_ref())
+		.args(args)
 		.exec();
 
 	Err(err)
