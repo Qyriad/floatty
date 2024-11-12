@@ -95,6 +95,7 @@ fn parent_loop(pty: File) -> miette::Result<()>
 		} else if event.key as u64 == sigwinch_key {
 			trace!("got sigwinch!");
 		} else if event.key as u64 == sigchld_key {
+			trace!("got sigchld");
 			return ControlFlow::Break(());
 		}
 

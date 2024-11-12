@@ -97,7 +97,6 @@ impl Poller
 		let mut poller = polling::Poller::new()
 			.into_diagnostic()
 			.context("registering base file poller with operating system")?;
-
 		let sources = sources.into_iter();
 		let mut fds: Vec<File> = Vec::with_capacity(sources.len());
 
@@ -158,6 +157,11 @@ impl Poller
 				if flow.is_break() {
 					break 'outer;
 				}
+
+				// Re-establish interest in this file.
+				self.inner.modify(matching_file, event)
+					.into_diagnostic()
+					.with_context(|| format!("re-adding poller for fd {}", raw_fd))?;
 			}
 		}
 

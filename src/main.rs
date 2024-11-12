@@ -102,6 +102,7 @@ fn handle_args() -> Result<HandledArgs, ExitCode>
 	// If we got here, then we weren't passed any options.
 	// Which means `first` is the command we want to execute.
 	let prog: Box<Path> = which::which(&first)
+		// If `which` doesn't find anything, just use the original argument.
 		.unwrap_or_else(|_| PathBuf::from(first))
 		.into_boxed_path();
 
